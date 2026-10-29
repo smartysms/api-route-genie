@@ -1,0 +1,13 @@
+# One line per endpoint, sorted: METHOD path -> handler [name=..] [tags=..] [deprecated] [PARTIAL=..]
+DELETE /api/v1/users/admin/{user_id} -> app.routers.admin.delete_user tags=v1,admin,admin-internal deprecated
+GET /api/latest/items/ -> app.routers.items.list_items tags=items
+GET /api/latest/items/{item_id} -> app.routers.items.read_item tags=items
+GET /api/v1/items/ -> app.routers.items.list_items tags=items
+GET /api/v1/items/{item_id} -> app.routers.items.read_item tags=items
+GET /api/v1/users/me -> app.routers.users.me tags=v1
+GET /health -> app.main.health
+GET /multi -> app.main.multi
+GET /sub/ping -> app.sub.ping
+POST /api/latest/items/ -> app.routers.items.create_item tags=items
+POST /api/v1/items/ -> app.routers.items.create_item tags=items
+POST /multi -> app.main.multi

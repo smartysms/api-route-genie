@@ -1,0 +1,49 @@
+<idea-plugin>
+    <!-- Only name and vendor are overwritten from gradle.properties (productName, repoSlug) at build time. -->
+    <id>com.routegenie.api</id>
+    <name>API Route Genie</name>
+    <vendor url="https://github.com/smartysms/api-route-genie">API Route Genie</vendor>
+
+    <description><![CDATA[
+        A window that lists the web endpoints of a Python project, takes you to the code, and lets you call them
+        without leaving the IDE. Works without the paid edition of the IDE.
+        Finds routes of FastAPI, Flask and Django (including Django REST Framework) projects, understands
+        prefixes and nested routers, and keeps the list up to date while you edit.
+        Open it with Ctrl+Alt+Shift+R.
+    ]]></description>
+
+    <depends>com.intellij.modules.python</depends>
+
+    <!-- Product names for menus, the tool window stripe and notifications come from messages/Branding.properties. -->
+    <resource-bundle>messages.Branding</resource-bundle>
+
+    <!-- Ids below must match com.routegenie.Ids; IdsConsistencyTest enforces it. -->
+    <extensionPoints>
+        <extensionPoint qualifiedName="com.routegenie.routeProvider"
+                        interface="com.routegenie.discovery.RouteProvider"
+                        dynamic="true"/>
+    </extensionPoints>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <projectService serviceImplementation="com.routegenie.discovery.core.RouteDiscoveryService"/>
+        <toolWindow id="RouteGenie" anchor="right" icon="/icons/routeGenie.svg" canCloseContents="false"
+                    factoryClass="com.routegenie.ui.RouteGenieToolWindowFactory"/>
+        <notificationGroup id="RouteGenie.Notifications" displayType="BALLOON"
+                           bundle="messages.Branding" key="notification.group"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="com.routegenie">
+        <routeProvider implementation="com.routegenie.frameworks.fastapi.FastApiRouteProvider"/>
+        <routeProvider implementation="com.routegenie.frameworks.flask.FlaskRouteProvider"/>
+        <routeProvider implementation="com.routegenie.frameworks.django.DjangoRouteProvider"/>
+    </extensions>
+
+    <actions>
+        <action id="RouteGenie.OpenWindow" class="com.routegenie.ui.OpenRouteGenieAction"
+                icon="/icons/routeGenie.svg">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift R"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

@@ -1,0 +1,53 @@
+ANY /admin/ [DJANGO] name=- handler=django.contrib.admin.site.urls @proj/urls.py:16
+ANY / [DJANGO] name=s:index handler=shop.views.index @shop/urls.py:8
+GET /item/{pk}/ [DJANGO] name=s:detail handler=shop.views.Detail @shop/urls.py:9 params=pk:int
+POST /item/{pk}/ [DJANGO] name=s:detail handler=shop.views.Detail @shop/urls.py:9 params=pk:int
+GET /form/ [DJANGO] name=- handler=shop.views.ItemForm @shop/urls.py:10
+POST /form/ [DJANGO] name=- handler=shop.views.ItemForm @shop/urls.py:10
+PUT /form/ [DJANGO] name=- handler=shop.views.ItemForm @shop/urls.py:10
+GET /remove/{pk}/ [DJANGO] name=s:remove handler=shop.views.Remove @shop/urls.py:11 params=pk:int
+POST /remove/{pk}/ [DJANGO] name=s:remove handler=shop.views.Remove @shop/urls.py:11 params=pk:int
+DELETE /remove/{pk}/ [DJANGO] name=s:remove handler=shop.views.Remove @shop/urls.py:11 params=pk:int
+GET /read/ [DJANGO] name=- handler=shop.views.only_get @shop/urls.py:12
+POST /write/ [DJANGO] name=- handler=shop.views.only_post @shop/urls.py:13
+GET /safe/ [DJANGO] name=- handler=shop.views.safe_view @shop/urls.py:14
+HEAD /safe/ [DJANGO] name=- handler=shop.views.safe_view @shop/urls.py:14
+GET /both/ [DJANGO] name=- handler=shop.views.both @shop/urls.py:15
+POST /both/ [DJANGO] name=- handler=shop.views.both @shop/urls.py:15
+GET /page/ [DJANGO] name=- handler=shop.views.Page @shop/urls.py:16
+GET /limited/ [DJANGO] name=- handler=shop.views.Limited @shop/urls.py:17
+ANY /x/ [DJANGO] name=- handler=shop.views.x @shop/urls.py:19
+ANY /appended/ [DJANGO] name=s:appended handler=shop.views.x @shop/urls.py:20
+ANY /store/ [DJANGO] name=shop:index handler=shop.views.index @shop/urls.py:8
+GET /store/item/{pk}/ [DJANGO] name=shop:detail handler=shop.views.Detail @shop/urls.py:9 params=pk:int
+POST /store/item/{pk}/ [DJANGO] name=shop:detail handler=shop.views.Detail @shop/urls.py:9 params=pk:int
+GET /store/form/ [DJANGO] name=- handler=shop.views.ItemForm @shop/urls.py:10
+POST /store/form/ [DJANGO] name=- handler=shop.views.ItemForm @shop/urls.py:10
+PUT /store/form/ [DJANGO] name=- handler=shop.views.ItemForm @shop/urls.py:10
+GET /store/remove/{pk}/ [DJANGO] name=shop:remove handler=shop.views.Remove @shop/urls.py:11 params=pk:int
+POST /store/remove/{pk}/ [DJANGO] name=shop:remove handler=shop.views.Remove @shop/urls.py:11 params=pk:int
+DELETE /store/remove/{pk}/ [DJANGO] name=shop:remove handler=shop.views.Remove @shop/urls.py:11 params=pk:int
+GET /store/read/ [DJANGO] name=- handler=shop.views.only_get @shop/urls.py:12
+POST /store/write/ [DJANGO] name=- handler=shop.views.only_post @shop/urls.py:13
+GET /store/safe/ [DJANGO] name=- handler=shop.views.safe_view @shop/urls.py:14
+HEAD /store/safe/ [DJANGO] name=- handler=shop.views.safe_view @shop/urls.py:14
+GET /store/both/ [DJANGO] name=- handler=shop.views.both @shop/urls.py:15
+POST /store/both/ [DJANGO] name=- handler=shop.views.both @shop/urls.py:15
+GET /store/page/ [DJANGO] name=- handler=shop.views.Page @shop/urls.py:16
+GET /store/limited/ [DJANGO] name=- handler=shop.views.Limited @shop/urls.py:17
+ANY /store/x/ [DJANGO] name=- handler=shop.views.x @shop/urls.py:19
+ANY /store/appended/ [DJANGO] name=shop:appended handler=shop.views.x @shop/urls.py:20
+GET /blog/ [DJANGO] name=blog:list handler=blog.views.PostList @blog/urls.py:8
+ANY /blog/{slug}/ [DJANGO] name=blog:post handler=blog.views.post_detail @blog/urls.py:9 params=slug:slug
+GET /blog/{slug}/comments/ [DJANGO] name=blog:c:all handler=blog.comments.views.CommentView @blog/comments/urls.py:6 params=slug:slug
+PUT /blog/{slug}/comments/ [DJANGO] name=blog:c:all handler=blog.comments.views.CommentView @blog/comments/urls.py:6 params=slug:slug
+DELETE /blog/{slug}/comments/{comment_id}/delete/ [DJANGO] name=blog:c:remove handler=blog.comments.views.remove @blog/comments/urls.py:7 params=slug:slug,comment_id:int
+ANY /api/v1/ping/ [DJANGO] name=ping handler=shop.views.ping @proj/urls.py:11
+ANY /api/v1/items/{item_id}/ [DJANGO] name=- handler=shop.views.item_api @proj/urls.py:12 params=item_id:int
+ANY /inline/a/ [DJANGO] name=- handler=shop.views.ping @proj/urls.py:23
+ANY /inline/b/ [DJANGO] name=b handler=shop.views.ping @proj/urls.py:23
+ANY /archive/{year}/ [DJANGO] name=archive handler=shop.views.archive @proj/urls.py:24 params=year:-
+ANY /legacy/{slug}/ [DJANGO] name=- handler=shop.views.archive @proj/urls.py:25 params=slug:-
+ANY /docs/{doc_path} [DJANGO] name=- handler=shop.views.ping @proj/urls.py:28 params=doc_path:path
+ANY /files/{name}/{token}/{plain}/ [DJANGO] name=- handler=shop.views.ping @proj/urls.py:29 params=name:slug,token:uuid,plain:str
+ANY /__debug__/ [DJANGO] name=- handler=shop.views.ping @proj/urls.py:36

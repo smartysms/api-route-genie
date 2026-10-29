@@ -1,0 +1,9 @@
+# One line per endpoint, sorted: METHOD path -> handler [name=..] [tags=..] [deprecated] [PARTIAL=..]
+GET /auth/login -> app.auth.login name=auth.login
+GET /auth/me -> app.auth.me name=auth.me
+GET /health -> app.health
+GET /users/ -> app.views.UserAPI name=users
+GET /v2/items/{item_id} -> app.api.get_item name=api.items.get_item
+GET /v2/status -> app.api.status name=api.status
+POST /auth/login -> app.auth.login name=auth.login
+POST /users/ -> app.views.UserAPI name=users

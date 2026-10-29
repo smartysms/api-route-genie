@@ -1,0 +1,34 @@
+GET /api/status/ [DRF] name=status handler=library.views.StatusView @library/urls.py:16
+POST /api/status/ [DRF] name=status handler=library.views.StatusView @library/urls.py:16
+GET /api/ping/ [DRF] name=ping handler=library.views.ping @library/urls.py:17
+GET /api/notes/ [DRF] name=- handler=library.views.NoteList @library/urls.py:18
+POST /api/notes/ [DRF] name=- handler=library.views.NoteList @library/urls.py:18
+GET /api/notes/{pk}/ [DRF] name=- handler=library.views.NoteDetail @library/urls.py:19 params=pk:int
+PUT /api/notes/{pk}/ [DRF] name=- handler=library.views.NoteDetail @library/urls.py:19 params=pk:int
+PATCH /api/notes/{pk}/ [DRF] name=- handler=library.views.NoteDetail @library/urls.py:19 params=pk:int
+DELETE /api/notes/{pk}/ [DRF] name=- handler=library.views.NoteDetail @library/urls.py:19 params=pk:int
+POST /api/both/ [DRF] name=- handler=library.views.both @library/urls.py:20
+PUT /api/both/ [DRF] name=- handler=library.views.both @library/urls.py:20
+GET /api/manual/ [DRF] name=- handler=library.views.ManualViewSet.list @library/urls.py:21
+POST /api/manual/ [DRF] name=- handler=library.views.ManualViewSet.create @library/urls.py:21
+GET /api/v2/tags [DRF] name=v2:tag-list handler=library.viewsets.TagViewSet.list @library/urls.py:13
+POST /api/v2/tags [DRF] name=v2:tag-list handler=library.viewsets.TagViewSet.create @library/urls.py:13
+GET /api/books/ [DRF] name=book-list handler=library.viewsets.BookViewSet.list @library/urls.py:8
+POST /api/books/ [DRF] name=book-list handler=library.viewsets.BookViewSet.create @library/urls.py:8
+GET /api/books/by_author/ [DRF] name=book-by-author handler=library.viewsets.BookViewSet.by_author @library/viewsets.py:21
+GET /api/books/recent/ [DRF] name=book-recent handler=library.viewsets.BookViewSet.recent @library/viewsets.py:17
+GET /api/books/{isbn}/ [DRF] name=book-detail handler=library.viewsets.BookViewSet.retrieve @library/urls.py:8 params=isbn:-
+PUT /api/books/{isbn}/ [DRF] name=book-detail handler=library.viewsets.BookViewSet.update @library/urls.py:8 params=isbn:-
+PATCH /api/books/{isbn}/ [DRF] name=book-detail handler=library.viewsets.BookViewSet.partial_update @library/urls.py:8 params=isbn:-
+DELETE /api/books/{isbn}/ [DRF] name=book-detail handler=library.viewsets.BookViewSet.destroy @library/urls.py:8 params=isbn:-
+POST /api/books/{isbn}/reset-copies/ [DRF] name=book-reset handler=library.viewsets.BookViewSet.reset @library/viewsets.py:13 params=isbn:-
+DELETE /api/books/{isbn}/reset-copies/ [DRF] name=book-reset handler=library.viewsets.BookViewSet.reset @library/viewsets.py:13 params=isbn:-
+GET /api/authors/ [DRF] name=author-list handler=library.viewsets.AuthorViewSet.list @library/urls.py:9
+POST /api/authors/ [DRF] name=author-list handler=library.viewsets.AuthorViewSet.create @library/urls.py:9
+GET /api/authors/{author_id}/ [DRF] name=author-detail handler=library.viewsets.AuthorViewSet.retrieve @library/urls.py:9 params=author_id:-
+PUT /api/authors/{author_id}/ [DRF] name=author-detail handler=library.viewsets.AuthorViewSet.update @library/urls.py:9 params=author_id:-
+PATCH /api/authors/{author_id}/ [DRF] name=author-detail handler=library.viewsets.AuthorViewSet.partial_update @library/urls.py:9 params=author_id:-
+DELETE /api/authors/{author_id}/ [DRF] name=author-detail handler=library.viewsets.AuthorViewSet.destroy @library/urls.py:9 params=author_id:-
+GET /api/readers/ [DRF] name=reader-list handler=library.viewsets.ReaderViewSet.list @library/urls.py:10
+GET /api/readers/{pk}/ [DRF] name=reader-detail handler=library.viewsets.ReaderViewSet.retrieve @library/urls.py:10 params=pk:-
+GET /api/ [DRF] name=api-root handler=rest_framework.routers.APIRootView @library/urls.py:7
