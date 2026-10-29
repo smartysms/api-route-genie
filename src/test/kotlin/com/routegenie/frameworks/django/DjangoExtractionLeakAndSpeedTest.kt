@@ -2,9 +2,9 @@ package com.routegenie.frameworks.django
 
 import com.intellij.psi.PsiManager
 import com.routegenie.Limits
-import com.routegenie.discovery.FileFacts
 import com.routegenie.testing.LeakProbe
 import com.routegenie.testing.PerfBudget
+import com.routegenie.testing.ProviderPipeline
 import java.util.IdentityHashMap
 
 /** Facts must hold no PSI, repeated extraction must not grow the heap, and re-reading one file must be fast. */
@@ -53,7 +53,7 @@ class DjangoExtractionLeakAndSpeedTest : DjangoTestBase() {
         val urls = myFixture.findFileInTempDir("library/urls.py")
         val psi = PsiManager.getInstance(project).findFile(urls)!!
         LeakProbe.assertNoHeapGrowth("django-extract-link", maxGrowthBytes = 4L * 1024 * 1024, warmups = 30, iterations = 150) {
-            val again = provider.extract(psi)!!
+            val again = ProviderPipeline.locate(psi, provider.extract(psi)!!)
             provider.link(facts.filter { it.path != again.path } + again)
         }
     }
@@ -63,7 +63,7 @@ class DjangoExtractionLeakAndSpeedTest : DjangoTestBase() {
         val target = myFixture.findFileInTempDir("shop/urls.py")
         val psi = PsiManager.getInstance(project).findFile(target)!!
         val result = PerfBudget.assertWithin("django-refresh-one-file", Limits.BUDGET_REFRESH_ONE_FILE_MS) {
-            val fresh = provider.extract(psi) as DjangoFacts
+            val fresh = ProviderPipeline.locate(psi, provider.extract(psi) as DjangoFacts)
             provider.link(facts.filter { it.path != fresh.path } + fresh)
         }
         assertTrue(result.medianMs <= Limits.BUDGET_REFRESH_ONE_FILE_MS)

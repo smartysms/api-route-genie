@@ -4,6 +4,8 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import com.routegenie.Limits
+import com.routegenie.testing.FakeSource
 import com.routegenie.testing.FakeRouteProvider
 import com.routegenie.testing.LeakProbe
 import com.routegenie.testing.ObjectGraph
@@ -61,7 +63,7 @@ class RouteDiscoveryLeakTest : EngineTestCase() {
     fun testCacheStaysBoundedAndEvictsOldEntries() {
         addSyntheticFiles(30, routesPerFile = 1)
         val provider = FakeRouteProvider()
-        val engine = engine(provider, cacheCapacity = 10)
+        val engine = engine(provider, cacheWeightLimit = 10L * (Limits.FACT_ENTRY_BYTES + FakeSource.WEIGHT))
         engine.refreshBlocking()
 
         assertEquals("every file still reaches the snapshot although the cache is smaller", 30, engine.snapshot.value.endpoints.size)

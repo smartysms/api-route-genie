@@ -3,7 +3,8 @@ package com.routegenie.discovery.core
 import com.intellij.openapi.util.Disposer
 import com.routegenie.Limits
 import com.routegenie.discovery.FileFacts
-import com.routegenie.testing.FakeFacts
+import com.routegenie.discovery.LocatedFacts
+import com.routegenie.testing.FakeSource
 import com.routegenie.testing.FakeRouteProvider
 import com.routegenie.testing.PerfBudget
 
@@ -59,7 +60,7 @@ class RouteDiscoveryPerfTest : EngineTestCase() {
 
     fun testPureLinkingOf5000EndpointsIsFast() {
         val provider = FakeRouteProvider()
-        val facts: List<FileFacts> = (0 until 5000).map { FakeFacts("f$it.py", listOf("/r$it")) }
+        val facts: List<FileFacts> = (0 until 5000).map { LocatedFacts("f$it.py", FakeSource(listOf("/r$it"))) }
 
         val result = PerfBudget.assertWithin("link-5000-endpoints", Limits.BUDGET_REFRESH_ONE_FILE_MS, warmups = 5, runs = 15) {
             assertEquals(5000, provider.link(facts).endpoints.size)

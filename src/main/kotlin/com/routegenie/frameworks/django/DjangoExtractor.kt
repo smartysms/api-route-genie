@@ -12,10 +12,8 @@ import com.jetbrains.python.psi.PyDictLiteralExpression
 import com.jetbrains.python.psi.PyExpression
 import com.jetbrains.python.psi.PyExpressionStatement
 import com.jetbrains.python.psi.PyFile
-import com.jetbrains.python.psi.PyFromImportStatement
 import com.jetbrains.python.psi.PyFunction
 import com.jetbrains.python.psi.PyIfStatement
-import com.jetbrains.python.psi.PyImportStatement
 import com.jetbrains.python.psi.PyKeywordArgument
 import com.jetbrains.python.psi.PyListLiteralExpression
 import com.jetbrains.python.psi.PyParenthesizedExpression
@@ -27,20 +25,22 @@ import com.jetbrains.python.psi.PyStringLiteralExpression
 import com.jetbrains.python.psi.PyTargetExpression
 import com.jetbrains.python.psi.PyTupleExpression
 import com.routegenie.Limits
-import com.routegenie.discovery.ValueEvaluators
+import com.routegenie.discovery.core.Expr
+import com.routegenie.discovery.core.ImportBinding
+import com.routegenie.discovery.core.Lit
+import com.routegenie.frameworks.common.PyExprBuilder
 import com.routegenie.model.HttpMethod
-import com.routegenie.model.StrValue
 
 /**
  * One pass over a Python file that produces [DjangoFacts]. Framework objects are recognized by the import origin written
  * in the file (`from django.urls import path`), never by resolve(), so it works without an interpreter and stays cheap.
- * Strings go through the shared value evaluator; whatever cannot be evaluated stays visible as unknown.
+ * Strings stay unevaluated [Expr] trees and imports stay as written: nothing here looks at another file or at where this
+ * file lives, so the result depends on the text alone.
  */
-internal class DjangoExtractor(private val file: PyFile, private val path: String) {
-    private val evaluator = ValueEvaluators.forFile(file)
-    private val module = DjangoModules.moduleOf(path)
+internal class DjangoExtractor(private val file: PyFile) {
     private val lineStarts = lineStarts(file.viewProvider.contents)
 
+    /** Local name to the dotted thing it stands for as written; relative imports keep their leading dots and never match a root. */
     private val imports = LinkedHashMap<String, String>()
     private val starRoots = HashSet<String>()
     private val lists = LinkedHashMap<String, List<ListItem>>()
@@ -48,17 +48,19 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
     private val registrations = ArrayList<Registration>()
     private val functions = LinkedHashMap<String, FunctionFact>()
     private val classes = LinkedHashMap<String, ClassFact>()
-    private var rootUrlconf: StrValue? = null
-    private var appName: StrValue? = null
+    private var rootUrlconf: Expr? = null
+    private var appName: Expr? = null
 
     fun extract(): DjangoFacts {
+        val table = PyExprBuilder.importsOf(file, recursive = false)
+        table.bindings.forEach { imports[it.local] = originOf(it) }
+        table.stars.filter { it.level == 0 }.forEach { starRoots += it.module.substringBefore('.') }
         val statements = file.statements
-        statements.forEach { readImports(it) }
         statements.forEach { visit(it) }
         return DjangoFacts(
-            path = path,
-            module = module,
-            imports = imports.toMap(),
+            imports = table.bindings,
+            stars = table.stars,
+            consts = PyExprBuilder.constsOf(file),
             rootUrlconf = rootUrlconf,
             appName = appName,
             patternLists = lists.toMap(),
@@ -71,33 +73,11 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
 
     // --- Imports -----------------------------------------------------------------------------------------------------
 
-    private fun readImports(statement: PyStatement) {
-        when (statement) {
-            is PyImportStatement -> statement.importElements.forEach { element ->
-                val qualified = element.importedQName?.toString() ?: return@forEach
-                val alias = element.asName
-                if (alias != null) imports[alias] = qualified else qualified.substringBefore('.').let { imports[it] = it }
-            }
-            is PyFromImportStatement -> {
-                val source = absoluteSource(statement)
-                if (statement.isStarImport) {
-                    starRoots += source.substringBefore('.')
-                } else {
-                    statement.importElements.forEach { element ->
-                        val name = element.importedQName?.toString() ?: return@forEach
-                        imports[element.asName ?: name] = if (source.isEmpty()) name else "$source.$name"
-                    }
-                }
-            }
-        }
-    }
-
-    private fun absoluteSource(statement: PyFromImportStatement): String {
-        val written = statement.importSourceQName?.toString().orEmpty()
-        val level = statement.relativeLevel
-        if (level == 0) return written
-        val base = DjangoModules.packageOf(path).split('.').filter { it.isNotEmpty() }.dropLast(level - 1)
-        return (base + listOfNotNull(written.takeIf { it.isNotEmpty() })).joinToString(".")
+    private fun originOf(binding: ImportBinding): String {
+        binding.dotted?.let { return if (binding.aliased) it else binding.local }
+        val name = binding.name.orEmpty()
+        val source = RELATIVE_DOT.repeat(binding.level) + binding.module
+        return if (source.isEmpty()) name else if (source.endsWith(RELATIVE_DOT)) source + name else "$source.$name"
     }
 
     /** True when [ref] (as written) stands for something imported from [root], including a bare name from a star import. */
@@ -136,8 +116,8 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
         val name = (statement.targets.firstOrNull() as? PyTargetExpression)?.name ?: return
         val value = statement.assignedValue ?: return
         when {
-            name == DjangoCatalog.SETTING_ROOT_URLCONF -> rootUrlconf = evaluator.evaluate(value)
-            name == DjangoCatalog.APP_NAME -> appName = evaluator.evaluate(value)
+            name == DjangoCatalog.SETTING_ROOT_URLCONF -> rootUrlconf = PyExprBuilder.build(value)
+            name == DjangoCatalog.APP_NAME -> appName = PyExprBuilder.build(value)
             routerDecl(value)?.also { routers[name] = it } != null -> Unit
             looksLikePatterns(value) -> {
                 val items = ArrayList<ListItem>()
@@ -181,9 +161,9 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
         if (!knownRouter && !(importedRouter && prefix is PyStringLiteralExpression)) return
         registrations += Registration(
             router = router,
-            prefix = evaluator.evaluate(prefix),
+            prefix = PyExprBuilder.build(prefix),
             viewset = viewset,
-            basename = argOf(call, primitive.basename)?.let { evaluator.evaluate(it) },
+            basename = argOf(call, primitive.basename)?.let { PyExprBuilder.build(it) },
             loc = loc(call),
         )
     }
@@ -234,9 +214,9 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
 
     private fun routeItem(kind: RouteKind, call: PyCallExpression, primitive: DjangoCatalog.Primitive) = RouteItem(
         kind = kind,
-        route = evaluator.evaluate(argOf(call, primitive.route)),
+        route = PyExprBuilder.build(argOf(call, primitive.route)),
         target = target(argOf(call, primitive.view)),
-        name = argOf(call, primitive.routeName)?.let { evaluator.evaluate(it) },
+        name = argOf(call, primitive.routeName)?.let { PyExprBuilder.build(it) },
         loc = loc(call),
     )
 
@@ -254,35 +234,29 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
         return ViewTarget(refText(view), asView = false)
     }
 
-    private fun actionMap(asViewCall: PyCallExpression, primitive: DjangoCatalog.Primitive): Map<String, String>? {
+    private fun actionMap(asViewCall: PyCallExpression, primitive: DjangoCatalog.Primitive): List<Pair<Expr, Expr>>? {
         val dict = argOf(asViewCall, primitive.view) as? PyDictLiteralExpression ?: return null
-        val map = LinkedHashMap<String, String>()
-        dict.elements.forEach { entry ->
-            val key = evaluator.evaluate(entry.key)
-            val value = evaluator.evaluate(entry.value)
-            if (key is StrValue.Known && value is StrValue.Known) map[key.text] = value.text
-        }
-        return map
+        return dict.elements.map { entry -> PyExprBuilder.build(entry.key) to PyExprBuilder.build(entry.value) }
     }
 
     private fun includeTarget(call: PyCallExpression, primitive: DjangoCatalog.Primitive): IncludeTarget {
         val argument = argOf(call, primitive.view)
-        var appName: StrValue? = null
+        var appName: Expr? = null
         var spec = specOf(argument)
         val tuple = (argument as? PyParenthesizedExpression)?.containedExpression ?: argument
         if (tuple is PyTupleExpression && tuple.elements.size == 2) {
             spec = specOf(tuple.elements[0])
-            appName = evaluator.evaluate(tuple.elements[1])
+            appName = PyExprBuilder.build(tuple.elements[1])
         }
-        return IncludeTarget(spec, appName, argOf(call, primitive.namespace)?.let { evaluator.evaluate(it) })
+        return IncludeTarget(spec, appName, argOf(call, primitive.namespace)?.let { PyExprBuilder.build(it) })
     }
 
     private fun specOf(expression: PyExpression?): IncludeSpec = when (expression) {
         null -> OpaqueSpec("")
         is PyListLiteralExpression -> InlineSpec(ArrayList<ListItem>().also { collect(expression, it) })
         is PyReferenceExpression -> refText(expression)?.let { RefSpec(it) } ?: OpaqueSpec(expression.text.take(Limits.MAX_QUOTED_SOURCE_CHARS))
-        is PyStringLiteralExpression -> ModuleSpec(evaluator.evaluate(expression))
-        is PyCallExpression, is PyBinaryExpression -> ModuleSpec(evaluator.evaluate(expression))
+        is PyStringLiteralExpression -> ModuleSpec(PyExprBuilder.build(expression))
+        is PyCallExpression, is PyBinaryExpression -> ModuleSpec(PyExprBuilder.build(expression))
         else -> OpaqueSpec(expression.text.take(Limits.MAX_QUOTED_SOURCE_CHARS))
     }
 
@@ -292,10 +266,10 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
         val call = value as? PyCallExpression ?: return null
         val primitive = calleeRef(call)?.let { primitiveOf(it) }?.takeIf { it.kind == DjangoCatalog.Kind.ROUTER_CLASS } ?: return null
         fun option(role: String) = primitive.options[role]?.let { call.getKeywordArgument(it) }
-        val trailing = when (val expr = option(DjangoCatalog.OPT_TRAILING_SLASH)) {
-            null -> StrValue.Known(DjangoCatalog.DEFAULT_TRAILING_SLASH)
-            is PyBoolLiteralExpression -> StrValue.Known(if (expr.value) DjangoCatalog.DEFAULT_TRAILING_SLASH else "")
-            else -> evaluator.evaluate(expr)
+        val trailing: Expr = when (val expr = option(DjangoCatalog.OPT_TRAILING_SLASH)) {
+            null -> Lit(DjangoCatalog.DEFAULT_TRAILING_SLASH)
+            is PyBoolLiteralExpression -> Lit(if (expr.value) DjangoCatalog.DEFAULT_TRAILING_SLASH else "")
+            else -> PyExprBuilder.build(expr)
         }
         // Only routers that list the option support it; for them it is on unless switched off with a literal.
         fun flag(role: String) = role in primitive.options && ((option(role) as? PyBoolLiteralExpression)?.value ?: true)
@@ -312,63 +286,52 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
 
     private fun functionFact(function: PyFunction): FunctionFact? {
         val name = function.name ?: return null
-        var methods: List<String>? = null
+        val steps = ArrayList<MethodStep>()
         var api = false
-        var dynamic = false
         for (decorator in function.decoratorList?.decorators.orEmpty()) {
             val primitive = refText(decorator.callee)?.let { primitiveOf(it) }
                 ?.takeIf { it.kind == DjangoCatalog.Kind.METHODS_DECORATOR } ?: continue
             api = api || primitive.apiView
             val fixed = primitive.fixedMethods
             val argument = argOf(decorator, primitive.methods)
-            when {
-                fixed != null -> methods = methods ?: fixed.map { it.name }
-                argument == null && primitive.defaultMethods != null -> methods = primitive.defaultMethods.map { it.name }
-                argument == null -> dynamic = true
-                else -> {
-                    val parsed = methodList(argument)
-                    if (parsed == null) dynamic = true else methods = parsed.first.also { dynamic = dynamic || parsed.second }
-                }
+            steps += when {
+                fixed != null -> FixedMethods(fixed.map { it.name })
+                argument == null && primitive.defaultMethods != null -> DefaultMethods(primitive.defaultMethods.map { it.name })
+                argument == null -> DynamicMethods
+                else -> methodList(argument)?.let { ListedMethods(it) } ?: DynamicMethods
             }
         }
-        if (!api && methods == null && !dynamic) return null
-        return FunctionFact(name, methods, api, dynamic, loc(function))
+        if (!api && steps.isEmpty()) return null
+        return FunctionFact(name, steps, api, loc(function))
     }
 
-    /** The upper-case verbs of a list or tuple literal and whether some element could not be evaluated; null for other shapes. */
-    private fun methodList(expression: PyExpression): Pair<List<String>, Boolean>? {
+    /** The elements of a list or tuple literal, unevaluated; null for other shapes. */
+    private fun methodList(expression: PyExpression): List<Expr>? {
         val elements = when (expression) {
             is PyListLiteralExpression -> expression.elements
             is PyTupleExpression -> expression.elements
             is PyParenthesizedExpression -> return expression.containedExpression?.let { methodList(it) }
             else -> return null
         }
-        var dynamic = false
-        val verbs = elements.mapNotNull { element ->
-            when (val value = evaluator.evaluate(element)) {
-                is StrValue.Known -> value.text.uppercase().takeIf { HttpMethod.parse(it) != null }
-                else -> null.also { dynamic = true }
-            }
-        }
-        return verbs to dynamic
+        return elements.map { PyExprBuilder.build(it) }
     }
 
     private fun classFact(cls: PyClass): ClassFact? {
         val name = cls.name ?: return null
         val bases = cls.superClassExpressions.mapNotNull { refText(it) }
         if (bases.isEmpty()) return null
-        var httpMethodNames: List<String>? = null
+        var httpMethodExprs: List<Expr>? = null
         var queryset: String? = null
-        var lookupField: String? = null
-        var lookupUrlKwarg: String? = null
+        var lookupField: Expr? = null
+        var lookupUrlKwarg: Expr? = null
         cls.statementList.statements.filterIsInstance<PyAssignmentStatement>().forEach { statement ->
             val attribute = (statement.targets.firstOrNull() as? PyTargetExpression)?.name ?: return@forEach
             val value = statement.assignedValue ?: return@forEach
             when (attribute) {
-                DjangoCatalog.ATTR_HTTP_METHOD_NAMES -> httpMethodNames = methodList(value)?.first?.map { it.lowercase() }
+                DjangoCatalog.ATTR_HTTP_METHOD_NAMES -> httpMethodExprs = methodList(value)
                 DjangoCatalog.ATTR_QUERYSET -> queryset = modelOfQueryset(value)
-                DjangoCatalog.ATTR_LOOKUP_FIELD -> lookupField = (evaluator.evaluate(value) as? StrValue.Known)?.text
-                DjangoCatalog.ATTR_LOOKUP_URL_KWARG -> lookupUrlKwarg = (evaluator.evaluate(value) as? StrValue.Known)?.text
+                DjangoCatalog.ATTR_LOOKUP_FIELD -> lookupField = PyExprBuilder.build(value)
+                DjangoCatalog.ATTR_LOOKUP_URL_KWARG -> lookupUrlKwarg = PyExprBuilder.build(value)
             }
         }
         val methods = cls.methods
@@ -376,7 +339,7 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
             name = name,
             bases = bases,
             methods = methods.mapNotNull { it.name }.toSet(),
-            httpMethodNames = httpMethodNames,
+            httpMethodExprs = httpMethodExprs,
             actions = methods.mapNotNull { actionFact(it) },
             queryset = queryset,
             lookupField = lookupField,
@@ -399,14 +362,14 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
         } ?: return null
         fun option(role: String) = primitive.options[role]?.let { decorator.getKeywordArgument(it) }
         val methodsExpr = argOf(decorator, primitive.methods)
-        val parsed = methodsExpr?.let { methodList(it) }
         return ActionFact(
             methodName = name,
             detail = (option(DjangoCatalog.OPT_DETAIL) as? PyBoolLiteralExpression)?.value,
-            methods = parsed?.first ?: primitive.defaultMethods.orEmpty().map { it.name },
-            urlPath = option(DjangoCatalog.OPT_URL_PATH)?.let { evaluator.evaluate(it) } ?: StrValue.Known(name),
-            urlName = option(DjangoCatalog.OPT_URL_NAME)?.let { evaluator.evaluate(it) } ?: StrValue.Known(name.replace('_', '-')),
-            dynamicMethods = methodsExpr != null && (parsed == null || parsed.second),
+            methodsPresent = methodsExpr != null,
+            methodExprs = methodsExpr?.let { methodList(it) },
+            defaultMethods = primitive.defaultMethods.orEmpty().map { it.name },
+            urlPath = option(DjangoCatalog.OPT_URL_PATH)?.let { PyExprBuilder.build(it) } ?: Lit(name),
+            urlName = option(DjangoCatalog.OPT_URL_NAME)?.let { PyExprBuilder.build(it) } ?: Lit(name.replace('_', '-')),
             loc = loc(method),
         )
     }
@@ -441,6 +404,8 @@ internal class DjangoExtractor(private val file: PyFile, private val path: Strin
     }
 
     private companion object {
+        const val RELATIVE_DOT = "."
+
         fun lineStarts(text: CharSequence): IntArray {
             val starts = ArrayList<Int>()
             starts += 0

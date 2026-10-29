@@ -1,24 +1,38 @@
 package com.routegenie.discovery.core
 
 import com.routegenie.Limits
-import com.routegenie.discovery.ValueEvaluators
+import com.routegenie.frameworks.common.PyFileFacts
+import com.routegenie.frameworks.fastapi.FastApiRouteProvider
 import com.routegenie.model.DiagnosticCode
 import com.routegenie.model.PathSyntax
 import com.routegenie.model.StrValue
 import com.routegenie.testing.PythonPlatformTestCase
 
 /**
- * Evaluator cases. Each test builds a small project in the light fixture and evaluates the right-hand side of `result`
- * in main.py. No Python SDK exists in the fixture, so every cross-file case proves that following names works without one.
+ * Evaluator cases. Each test builds a small project in the light fixture, extracts the context-free facts of every file
+ * (expression trees and import tables, nothing evaluated) and evaluates the right-hand side of `result` in main.py with the
+ * pure [ExprEvaluator]. No Python SDK exists in the fixture, so every cross-file case proves that following names works
+ * without one.
  */
 class PyValueEvaluatorTest : PythonPlatformTestCase() {
     private val hole = PathSyntax.UNKNOWN_SEGMENT
+    private val provider = FastApiRouteProvider()
+
+    private fun entries(): List<ModuleEntry> = allFiles.mapNotNull { file ->
+        val facts = provider.extractDependency(file) as? PyFileFacts ?: return@mapNotNull null
+        val path = file.virtualFile.path.substringAfter("/src/")
+        ModuleEntry(path, ModuleNames.moduleOf(path, ""), ModuleNames.isPackage(path), facts)
+    }
+
+    private val allFiles = ArrayList<com.intellij.psi.PsiFile>()
 
     private fun eval(main: String, vararg others: Pair<String, String>): StrValue {
-        others.forEach { (path, text) -> pythonFile(path, text) }
-        val file = pythonFile("main.py", main)
-        val value = file.findTopLevelAttribute("result")?.findAssignedValue() ?: error("main.py needs `result = ...`")
-        return ValueEvaluators.forFile(file).evaluate(value)
+        others.forEach { (path, text) -> allFiles += pythonFile(path, text) }
+        allFiles += pythonFile("main.py", main)
+        val entries = entries()
+        val entry = entries.single { it.path == "main.py" }
+        val value = entry.constsNamed("result").singleOrNull()?.value ?: error("main.py needs one `result = ...`")
+        return ExprEvaluator(ModuleTable(entries)).evaluate(entry, value)
     }
 
     private fun assertKnown(expected: String, actual: StrValue) = assertEquals(StrValue.Known(expected), actual)
@@ -35,8 +49,9 @@ class PyValueEvaluatorTest : PythonPlatformTestCase() {
     }
 
     fun testNullExpressionIsUnknown() {
-        val file = pythonFile("main.py", "x = 1\n")
-        assertUnknown(ValueEvaluators.forFile(file).evaluate(null))
+        allFiles += pythonFile("main.py", "x = 1\n")
+        val entry = entries().single()
+        assertUnknown(ExprEvaluator(ModuleTable(listOf(entry))).evaluate(entry, null))
     }
 
     fun testPlainLiteral() = assertKnown("/items", eval("result = '/items'\n"))

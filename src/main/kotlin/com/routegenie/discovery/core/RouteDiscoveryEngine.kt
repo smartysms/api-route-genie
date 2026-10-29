@@ -3,23 +3,32 @@ package com.routegenie.discovery.core
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileCreateEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileDeleteEvent
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileMoveEvent
+import com.intellij.openapi.vfs.newvfs.events.VFilePropertyChangeEvent
 import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiManager
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.openapi.vfs.VirtualFileWithId
 import com.jetbrains.python.PythonLanguage
 import com.routegenie.Limits
 import com.routegenie.RouteGenieBundle
-import com.routegenie.discovery.FileFacts
+import com.routegenie.discovery.SourceFacts
+import com.routegenie.discovery.LocatedFacts
+import com.routegenie.discovery.ProjectPaths
 import com.routegenie.discovery.RouteProvider
 import com.routegenie.model.Diagnostic
 import com.routegenie.model.DiagnosticCode
@@ -30,20 +39,33 @@ import com.routegenie.model.Severity
 import com.routegenie.model.SourceRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The discovery pipeline: candidates -> per-file facts (cached by path and modification stamp) -> link per provider
- * outside any lock -> immutable [RouteSnapshot]. Everything runs on [scope]; read actions are short batches so typing
- * can interleave, and a failing provider or file becomes a [Diagnostic] without affecting the others.
+ * The discovery pipeline: candidates -> context-free per-file facts (cached by file and modification stamp, bounded by
+ * estimated size) -> the files those facts depend on -> link per provider outside any lock -> immutable [RouteSnapshot].
+ *
+ * Shape of the work, and why:
+ * - A file is read in its own short read action, never in a batch, so typing (a write action) can only cancel the one
+ *   file in flight; the cheap comparison of cached stamps runs in larger batches because it never parses.
+ * - Extraction runs on a small pool ([parallelism]) and never on the UI thread.
+ * - Facts hold nothing from other files, so a file that other files depend on is just another cached entry: when it
+ *   changes, the files that use it are relinked, not re-parsed. Which extra files are needed is asked of the provider
+ *   ([RouteProvider.missingModules]) after each round, until nothing is missing.
+ * - When a pass leaves every provider's linker input equal to the last one, nothing is linked and nothing is published.
  *
  * The owner passes a [parent] that disposes the engine: listeners are disconnected and every coroutine it started is
  * cancelled. [providers] is a supplier so tests can drive the engine with fakes.
@@ -54,17 +76,30 @@ class RouteDiscoveryEngine(
     parent: Disposable,
     private val providers: () -> List<RouteProvider>,
     private val debounceMs: Long = Limits.REFRESH_DEBOUNCE_MS,
-    cacheCapacity: Int = Limits.MAX_CACHED_FILE_FACTS,
+    cacheWeightLimit: Long = Limits.MAX_FACTS_CACHE_BYTES,
     active: Boolean = true,
+    parallelism: Int = Limits.extractParallelism(Runtime.getRuntime().availableProcessors()),
 ) {
     private val log = Logger.getInstance(RouteDiscoveryEngine::class.java)
     private val state = MutableStateFlow(RouteSnapshot.EMPTY)
     private val generation = AtomicLong(0)
     private val runLock = Mutex()
     private val triggers = Channel<Unit>(Channel.CONFLATED)
-    private val cache = BoundedLruCache<String, FileFactsEntry>(cacheCapacity)
+    private val cache = WeightedLruCache<String, FactsEntry>(cacheWeightLimit) { it.weight }
     private val jobs = ArrayList<Job>()
     private val listeners: Disposable = Disposer.newDisposable("RouteDiscoveryEngine listeners")
+
+    /** Module name to project file, with "no such file" remembered too; valid while [layoutVersion] is unchanged. */
+    private val moduleFiles = WeightedLruCache<String, ModuleFile>(Limits.MAX_MODULE_LOOKUPS.toLong()) { 1 }
+    private val layoutVersion = AtomicLong(0)
+    private var moduleFilesVersion = -1L
+
+    /** What the last pass linked per provider, to skip linking and publishing when nothing changed. */
+    private val memo = HashMap<String, Memo>()
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val workers = parallelism.coerceIn(1, Limits.EXTRACT_PARALLELISM_CAP)
+    private val extractPool = Dispatchers.Default.limitedParallelism(workers)
 
     @Volatile
     private var disposed = false
@@ -78,7 +113,7 @@ class RouteDiscoveryEngine(
     var isStale = true
         private set
 
-    private val runs = java.util.concurrent.atomic.AtomicInteger()
+    private val runs = AtomicInteger()
 
     /** How many discovery passes have started; tests use it to prove that irrelevant changes cost no pass at all. */
     val runCount: Int get() = runs.get()
@@ -92,6 +127,9 @@ class RouteDiscoveryEngine(
 
     /** Number of cached per-file entries, for tests that check the cache stays bounded. */
     val cachedEntries: Int get() = cache.size
+
+    /** Estimated bytes of the cached facts, for the same tests. */
+    val cachedWeight: Long get() = cache.weight
 
     /** True once every coroutine this engine started has finished or been cancelled. */
     val isStopped: Boolean get() = synchronized(jobs) { jobs.all { !it.isActive } }
@@ -107,7 +145,10 @@ class RouteDiscoveryEngine(
         connection.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<VFileEvent>) {
                 // A checkout delivers one batch for thousands of files; the debounce turns it into one pass.
-                if (events.any { isRelevant(it.path) }) requestRefresh()
+                val relevant = events.filter { isRelevant(it.path) }
+                if (relevant.isEmpty()) return
+                if (relevant.any { it.changesLayout() }) layoutVersion.incrementAndGet()
+                requestRefresh()
             }
         })
         connection.subscribe(PsiModificationTracker.TOPIC, PsiModificationTracker.Listener {
@@ -119,7 +160,10 @@ class RouteDiscoveryEngine(
             }
         })
         connection.subscribe(DumbService.DUMB_MODE, object : DumbService.DumbModeListener {
-            override fun exitDumbMode() = requestRefresh()
+            override fun exitDumbMode() {
+                layoutVersion.incrementAndGet()
+                requestRefresh()
+            }
         })
         synchronized(jobs) {
             jobs += scope.launch { debounceLoop() }
@@ -150,8 +194,8 @@ class RouteDiscoveryEngine(
     }
 
     /**
-     * One full pass: re-reads only the files whose stamp changed, relinks, publishes if the result differs. Runs one at
-     * a time; a caller that arrives meanwhile waits and then runs again against the newer state.
+     * One full pass: re-reads only the files whose stamp changed, relinks what changed, publishes if the result differs.
+     * Runs one at a time; a caller that arrives meanwhile waits and then runs again against the newer state.
      */
     suspend fun refreshNow() {
         runLock.withLock {
@@ -160,75 +204,213 @@ class RouteDiscoveryEngine(
             isStale = false
             val endpoints = ArrayList<Endpoint>()
             val diagnostics = ArrayList<Diagnostic>()
-            for (provider in providers().sortedBy { it.id }) {
-                runProvider(provider, endpoints, diagnostics)
+            var changed = false
+            val sorted = providers().sortedBy { it.id }
+            if (memo.keys != sorted.mapTo(HashSet()) { it.id }) changed = true
+            memo.keys.retainAll(sorted.mapTo(HashSet()) { it.id })
+            for (provider in sorted) {
+                val outcome = runProvider(provider)
+                changed = changed || outcome.changed
+                endpoints += outcome.endpoints
+                diagnostics += outcome.diagnostics
             }
-            publish(endpoints, diagnostics)
+            if (changed || state.value.generation == 0L) publish(endpoints, diagnostics)
         }
     }
 
-    private suspend fun runProvider(provider: RouteProvider, endpoints: MutableList<Endpoint>, diagnostics: MutableList<Diagnostic>) {
+    private class Outcome(val endpoints: List<Endpoint>, val diagnostics: List<Diagnostic>, val changed: Boolean)
+
+    /**
+     * What a link was made from. The facts are held weakly on purpose: the cache bounds how much extracted data stays in
+     * memory, and a strong reference here would defeat it. A fact object that was evicted and collected counts as changed.
+     */
+    private class Memo(
+        val inputs: List<Input>,
+        val failures: List<Diagnostic>,
+        val endpoints: List<Endpoint>,
+        val diagnostics: List<Diagnostic>,
+    ) {
+        fun sameAs(located: List<LocatedFacts>, newFailures: List<Diagnostic>): Boolean =
+            failures == newFailures && inputs.size == located.size &&
+                inputs.indices.all { i -> inputs[i].matches(located[i]) }
+    }
+
+    private class Input(val path: String, val root: String, val facts: WeakReference<SourceFacts>) {
+        constructor(located: LocatedFacts) : this(located.path, located.sourceRoot, WeakReference(located.source))
+
+        fun matches(located: LocatedFacts) = path == located.path && root == located.sourceRoot && facts.get() === located.source
+    }
+
+    private class ModuleFile(val file: VirtualFile?)
+
+    /** One file of a pass: where it is, its cache key and stamp, and the entry that is valid for it (null: must be extracted). */
+    private class Checked(val file: VirtualFile, val key: String, val fileKey: String, val stamp: Long, val path: String, val root: String, var entry: FactsEntry?)
+
+    private suspend fun runProvider(provider: RouteProvider): Outcome {
         try {
             val candidates = smartReadAction(project) { provider.findCandidates(project).toList() }
-            evictVanished(provider, candidates)
-            val facts = ArrayList<FileFacts>()
-            for (batch in candidates.chunked(Limits.DISCOVERY_BATCH_FILES)) {
-                val read = smartReadAction(project) { readBatch(provider, batch) }
-                facts += read.facts
-                diagnostics += read.diagnostics
+            val located = LinkedHashMap<String, LocatedFacts>()
+            val failures = ArrayList<Diagnostic>()
+            val live = HashSet<String>()
+            load(provider, candidates, dependency = false, located, failures, live)
+            for (round in 0 until Limits.MAX_DEPENDENCY_ROUNDS) {
+                val missing = provider.missingModules(located.values)
+                if (missing.isEmpty()) break
+                val files = filesOf(provider, missing).filter { fileKeyOf(it) !in located }
+                if (files.isEmpty()) break
+                load(provider, files, dependency = true, located, failures, live)
+            }
+            evictUnused(provider, live)
+            val inputs = located.values.toList()
+            val previous = memo[provider.id]
+            if (previous != null && previous.sameAs(inputs, failures)) {
+                return Outcome(previous.endpoints, previous.diagnostics, changed = false)
             }
             // No lock is held here: linking is pure data work and may take a while for large projects.
-            val linked = provider.link(facts)
-            endpoints += linked.endpoints
-            diagnostics += linked.diagnostics
+            val linked = provider.link(inputs)
+            val diagnostics = failures + linked.diagnostics
+            memo[provider.id] = Memo(inputs.map(::Input), failures, linked.endpoints, diagnostics)
+            return Outcome(linked.endpoints, diagnostics, changed = true)
         } catch (e: Throwable) {
             rethrowIfControlFlow(e)
             log.warn("Route provider ${provider.id} failed", e)
-            diagnostics += failure(provider.id, null, e)
+            memo.remove(provider.id)
+            return Outcome(emptyList(), listOf(failure(provider.id, null, e)), changed = true)
         }
     }
 
-    /** Deleted, moved and renamed files drop out of the candidates; their cached facts go with them. */
-    private fun evictVanished(provider: RouteProvider, candidates: List<VirtualFile>) {
+    /**
+     * Brings the facts of [files] up to date: stamps are compared in cheap batches, files whose stamp changed are
+     * extracted one per read action on the pool. Located facts are appended to [located] (first one wins per file).
+     */
+    private suspend fun load(
+        provider: RouteProvider,
+        files: List<VirtualFile>,
+        dependency: Boolean,
+        located: MutableMap<String, LocatedFacts>,
+        failures: MutableList<Diagnostic>,
+        live: MutableSet<String>,
+    ) {
+        val checked = ArrayList<Checked>(files.size)
+        for (batch in files.chunked(Limits.STAMP_CHECK_BATCH_FILES)) {
+            checked += smartReadAction(project) { checkBatch(provider, batch, dependency) }
+        }
+        val dirty = checked.filter { it.entry == null }
+        if (dirty.isNotEmpty()) extract(provider, dirty, dependency)
+        for (c in checked) {
+            live += c.key
+            val entry = c.entry ?: continue
+            entry.failure?.let { failures += it }
+            entry.facts?.let { located.putIfAbsent(c.fileKey, LocatedFacts(c.path, it, c.root)) }
+        }
+    }
+
+    /** Runs inside a read action that may restart, so it builds fresh objects each time; it only reads and never parses. */
+    private fun checkBatch(provider: RouteProvider, files: List<VirtualFile>, dependency: Boolean): List<Checked> {
+        val out = ArrayList<Checked>(files.size)
+        for (file in files) {
+            ProgressManager.checkCanceled()
+            if (!file.isValid) continue
+            val fileKey = fileKeyOf(file)
+            val key = cacheKey(provider, fileKey, dependency)
+            val stamp = stampOf(file)
+            val path = ProjectPaths.relative(project, file)
+            val entry = cache[key]?.takeIf { it.stamp == stamp }
+            out += Checked(file, key, fileKey, stamp, path, ProjectPaths.sourceRoot(project, file, path), entry)
+        }
+        return out
+    }
+
+    /** Extracts [dirty] files, one read action each, on at most [workers] threads. */
+    private suspend fun extract(provider: RouteProvider, dirty: List<Checked>, dependency: Boolean) {
+        val next = AtomicInteger()
+        val interrupted = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        coroutineScope {
+            repeat(minOf(workers, dirty.size)) {
+                launch(extractPool) {
+                    while (interrupted.get() == null) {
+                        val i = next.getAndIncrement()
+                        if (i >= dirty.size) break
+                        val c = dirty[i]
+                        try {
+                            c.entry = smartReadAction(project) { extractOne(provider, c, dependency) }
+                        } catch (e: CancellationException) {
+                            // A child that is cancelled does not fail its scope, so the pass would go on with holes in it.
+                            interrupted.compareAndSet(null, e)
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        interrupted.get()?.let { throw it }
+    }
+
+    private fun extractOne(provider: RouteProvider, c: Checked, dependency: Boolean): FactsEntry? {
+        if (!c.file.isValid) return null
+        val psiManager = PsiManager.getInstance(project)
+        val psi = psiManager.findFile(c.file) ?: return null
+        val stamp = stampOf(c.file)
+        val entry = try {
+            ProgressManager.checkCanceled()
+            val facts = if (dependency) provider.extractDependency(psi) else provider.extract(psi)
+            // Equal facts keep their old identity, so "did this file change what it contributes" is an identity check later.
+            FactsEntry(stamp, facts?.let { fresh -> cache[c.key]?.facts?.takeIf { it == fresh } ?: fresh }, null)
+        } catch (e: Throwable) {
+            rethrowIfControlFlow(e)
+            log.warn("Route provider ${provider.id} failed on ${c.file.path}", e)
+            FactsEntry(stamp, null, failure(provider.id, c.file, e))
+        }
+        cache[c.key] = entry
+        return entry
+    }
+
+    /**
+     * Changes whenever the text of [file] changes, without touching PSI. A loaded document starts with the stamp of its
+     * file, so loading one does not look like an edit. While a document has uncommitted changes the PSI still shows the old
+     * text, so the stamp is a marker no real stamp equals: facts made now are replaced as soon as the commit arrives.
+     */
+    private fun stampOf(file: VirtualFile): Long {
+        val document = FileDocumentManager.getInstance().getCachedDocument(file) ?: return file.modificationStamp
+        return if (PsiDocumentManager.getInstance(project).isCommitted(document)) document.modificationStamp else UNCOMMITTED_STAMP
+    }
+
+    private fun fileKeyOf(file: VirtualFile): String = ((file as? VirtualFileWithId)?.id ?: file.path.hashCode()).toString()
+
+    private fun cacheKey(provider: RouteProvider, fileKey: String, dependency: Boolean) =
+        provider.id + KEY_SEPARATOR + fileKey + if (dependency) DEPENDENCY_SUFFIX else CANDIDATE_SUFFIX
+
+    /** Deleted files, files that are no longer candidates and dependencies nobody needs any more lose their cached facts. */
+    private fun evictUnused(provider: RouteProvider, live: Set<String>) {
         val prefix = provider.id + KEY_SEPARATOR
-        val live = HashSet<String>(candidates.size * 2)
-        candidates.forEach { live += prefix + it.path }
         cache.keys().forEach { if (it.startsWith(prefix) && it !in live) cache.remove(it) }
     }
+
+    /** The project files of [modules]; unknown names are remembered as such until the file layout changes. */
+    private suspend fun filesOf(provider: RouteProvider, modules: Set<String>): List<VirtualFile> {
+        val version = layoutVersion.get()
+        if (moduleFilesVersion != version) {
+            moduleFiles.clear()
+            moduleFilesVersion = version
+        }
+        val unknown = modules.filter { moduleFiles[it] == null }
+        for (batch in unknown.chunked(Limits.STAMP_CHECK_BATCH_FILES)) {
+            val found = smartReadAction(project) {
+                batch.map { it to provider.findModuleFile(project, it) }
+            }
+            found.forEach { (name, file) -> moduleFiles[name] = ModuleFile(file) }
+        }
+        return modules.mapNotNull { moduleFiles[it]?.file }.filter { it.isValid }.distinct()
+    }
+
+    private fun VFileEvent.changesLayout(): Boolean =
+        this is VFileCreateEvent || this is VFileDeleteEvent || this is VFileMoveEvent || this is VFileCopyEvent ||
+            (this is VFilePropertyChangeEvent && isRename)
 
     private fun isRelevant(path: String): Boolean {
         val name = path.substringAfterLast('/')
         // Directories have no extension and may hold Python files (moved, deleted or renamed as a whole).
         return !name.contains('.') || name.endsWith(PYTHON_SUFFIX)
-    }
-
-    private class BatchResult(val facts: List<FileFacts>, val diagnostics: List<Diagnostic>)
-
-    /** Runs inside a read action that may restart, so it builds fresh lists each time; its only side effect is the cache. */
-    private fun readBatch(provider: RouteProvider, files: List<VirtualFile>): BatchResult {
-        val facts = ArrayList<FileFacts>(files.size)
-        val diagnostics = ArrayList<Diagnostic>()
-        val psiManager = PsiManager.getInstance(project)
-        for (file in files) {
-            ProgressManager.checkCanceled()
-            val psi = psiManager.findFile(file) ?: continue
-            val key = provider.id + KEY_SEPARATOR + file.path
-            val stamp = psi.modificationStamp
-            var entry = cache[key]
-            if (entry == null || entry.stamp != stamp) {
-                entry = try {
-                    FileFactsEntry(stamp, provider.extract(psi), null)
-                } catch (e: Throwable) {
-                    rethrowIfControlFlow(e)
-                    log.warn("Route provider ${provider.id} failed on ${file.path}", e)
-                    FileFactsEntry(stamp, null, failure(provider.id, file, e))
-                }
-                cache[key] = entry
-            }
-            entry.facts?.let { facts += it }
-            entry.failure?.let { diagnostics += it }
-        }
-        return BatchResult(facts, diagnostics)
     }
 
     /**
@@ -257,14 +439,9 @@ class RouteDiscoveryEngine(
     }
 
     private fun failure(providerId: String, file: VirtualFile?, error: Throwable): Diagnostic {
-        val path = file?.let { relativePath(it) }
+        val path = file?.let { ProjectPaths.relative(project, it) }
         val args = listOfNotNull(providerId, path, error.javaClass.simpleName)
         return Diagnostic(Severity.WARNING, DiagnosticCode.INTERNAL_ERROR, args, path?.let { SourceRef(it, 0, 1) })
-    }
-
-    private fun relativePath(file: VirtualFile): String {
-        val base = project.basePath ?: return file.path
-        return FileUtil.getRelativePath(base, file.path, '/') ?: file.path
     }
 
     private suspend fun debounceLoop() {
@@ -289,6 +466,8 @@ class RouteDiscoveryEngine(
         triggers.close()
         synchronized(jobs) { jobs.forEach { it.cancel() } }
         cache.clear()
+        moduleFiles.clear()
+        memo.clear()
     }
 
     private fun rethrowIfControlFlow(e: Throwable) {
@@ -298,5 +477,8 @@ class RouteDiscoveryEngine(
     private companion object {
         const val PYTHON_SUFFIX = ".py"
         const val KEY_SEPARATOR = "|"
+        const val CANDIDATE_SUFFIX = "|c"
+        const val DEPENDENCY_SUFFIX = "|d"
+        const val UNCOMMITTED_STAMP = Long.MIN_VALUE
     }
 }

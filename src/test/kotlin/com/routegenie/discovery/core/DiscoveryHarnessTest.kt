@@ -20,7 +20,7 @@ import org.junit.Test
 class DiscoveryHarnessTest {
     @Test
     fun `cache never exceeds capacity and drops the least recently used entry`() {
-        val cache = BoundedLruCache<String, Int>(3)
+        val cache = WeightedLruCache<String, Int>(3) { 1 }
         cache["a"] = 1; cache["b"] = 2; cache["c"] = 3
         assertEquals(1, cache["a"]) // a is now most recently used
         cache["d"] = 4

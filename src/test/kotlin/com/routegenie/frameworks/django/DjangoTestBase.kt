@@ -1,11 +1,11 @@
 package com.routegenie.frameworks.django
 
-import com.intellij.psi.PsiManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.routegenie.discovery.FileFacts
 import com.routegenie.discovery.LinkResult
 import com.routegenie.model.DiagnosticCode
 import com.routegenie.model.Endpoint
+import com.routegenie.testing.ProviderPipeline
 import java.io.File
 
 /** Shared helpers: put Python files into the light project, run the provider over them and render the result as text. */
@@ -16,8 +16,8 @@ abstract class DjangoTestBase : BasePlatformTestCase() {
 
     /** Adds [files] (relative path to source text), extracts every one and links. */
     protected fun link(vararg files: Pair<String, String>): LinkResult {
-        val facts = files.mapNotNull { (path, text) -> provider.extract(myFixture.addFileToProject(path, text)) }
-        return provider.link(facts)
+        files.forEach { (path, text) -> myFixture.addFileToProject(path, text) }
+        return provider.link(ProviderPipeline.collect(project, provider))
     }
 
     /** Adds the fixture's Python files once (calling this again for the same fixture reuses them) and extracts each. */
@@ -25,11 +25,10 @@ abstract class DjangoTestBase : BasePlatformTestCase() {
         val root = File(TEST_DATA, fixture)
         val relatives = root.walkTopDown().filter { it.isFile && it.extension == "py" }
             .map { it.relativeTo(root).invariantSeparatorsPath }.sorted().toList()
-        return relatives.mapNotNull { relative ->
-            val psi = myFixture.findFileInTempDir(relative)?.let { PsiManager.getInstance(project).findFile(it) }
-                ?: myFixture.addFileToProject(relative, File(root, relative).readText())
-            provider.extract(psi)
+        relatives.forEach { relative ->
+            if (myFixture.findFileInTempDir(relative) == null) myFixture.addFileToProject(relative, File(root, relative).readText())
         }
+        return ProviderPipeline.collect(project, provider)
     }
 
     protected fun linkFixture(fixture: String): LinkResult = provider.link(extractAll(fixture))

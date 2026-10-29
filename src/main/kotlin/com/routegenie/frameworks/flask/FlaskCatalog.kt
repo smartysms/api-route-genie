@@ -25,10 +25,19 @@ internal object FlaskCatalog {
         Primitive(it.name.lowercase(), PrimitiveKind.ROUTE_DECORATOR, path = rule, fixedMethod = it, endpoint = endpoint)
     }
 
+    /** Class based views: the base classes that make a class a view, and the `as_view` call that registers it. */
+    val methodViewClasses = setOf("flask.views.MethodView", "flask.MethodView")
+    val viewClasses = setOf("flask.views.View", "flask.View")
+
+    private val viewClassNames = (methodViewClasses + viewClasses).map { it.substringAfterLast('.') }.toSet()
+
     val table = PrimitiveTable(
         providerId = PROVIDER_ID,
         importRoots = setOf("flask"),
         capturesClasses = true,
+        // A view class lives in a file that names no route call; `View` is common in Django, so Flask must also be mentioned.
+        extraWords = viewClassNames,
+        extraMarkerGroups = viewClassNames.map { setOf("flask", it) },
         primitives = listOf(
             Primitive("Flask", PrimitiveKind.APP, origins = setOf("flask.Flask", "flask.app.Flask")),
             Primitive(
@@ -48,9 +57,6 @@ internal object FlaskCatalog {
         ) + shortcuts,
     )
 
-    /** Class based views: the base classes that make a class a view, and the `as_view` call that registers it. */
-    val methodViewClasses = setOf("flask.views.MethodView", "flask.MethodView")
-    val viewClasses = setOf("flask.views.View", "flask.View")
     const val AS_VIEW = "as_view"
 
     /** Lower-case handler names of a MethodView that become methods. */

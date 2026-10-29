@@ -17,6 +17,7 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.PsiTestUtil
 import com.routegenie.Limits
 import com.routegenie.discovery.FileFacts
+import com.routegenie.discovery.SourceFacts
 import com.routegenie.discovery.LinkResult
 import com.routegenie.discovery.RouteProvider
 import com.routegenie.discovery.core.RouteDiscoveryEngine
@@ -98,7 +99,7 @@ class TimedProvider(private val inner: RouteProvider, val stats: Stats) : RouteP
         return r
     }
 
-    override fun extract(file: PsiFile): FileFacts? {
+    override fun extract(file: PsiFile): SourceFacts? {
         noteThread()
         val t = System.nanoTime()
         val r = inner.extract(file)
@@ -107,6 +108,12 @@ class TimedProvider(private val inner: RouteProvider, val stats: Stats) : RouteP
         if (r != null) stats.extractFacts.incrementAndGet()
         return r
     }
+
+    override fun extractDependency(file: PsiFile): SourceFacts? = inner.extractDependency(file)
+
+    override fun missingModules(facts: Collection<FileFacts>): Set<String> = inner.missingModules(facts)
+
+    override fun findModuleFile(project: Project, module: String): VirtualFile? = inner.findModuleFile(project, module)
 
     override fun link(facts: Collection<FileFacts>): LinkResult {
         noteThread()

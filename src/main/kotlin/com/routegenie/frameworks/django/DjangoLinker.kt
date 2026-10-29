@@ -3,6 +3,9 @@ package com.routegenie.frameworks.django
 import com.routegenie.Limits
 import com.routegenie.discovery.FileFacts
 import com.routegenie.discovery.LinkResult
+import com.routegenie.discovery.core.Expr
+import com.routegenie.discovery.core.ExprEvaluator
+import com.routegenie.discovery.core.ModuleTable
 import com.routegenie.model.Diagnostic
 import com.routegenie.model.DiagnosticCode
 import com.routegenie.model.Endpoint
@@ -26,8 +29,7 @@ class DjangoLinker(private val options: Options = Options()) {
      */
     data class Options(val emitFormatSuffixVariants: Boolean = false)
 
-    fun link(facts: Collection<FileFacts>): LinkResult =
-        Run(facts.filterIsInstance<DjangoFacts>().sortedBy { it.path }, options).execute()
+    fun link(facts: Collection<FileFacts>): LinkResult = Run(DjangoResolver.files(facts), options).execute()
 
     private class Ctx(
         val prefix: String,
@@ -44,19 +46,19 @@ class DjangoLinker(private val options: Options = Options()) {
     // --- Symbols found by following a reference through imports ------------------------------------------------------
 
     private sealed interface Sym
-    private class ModuleSym(val facts: DjangoFacts) : Sym
-    private class ListSym(val facts: DjangoFacts, val name: String) : Sym
-    private class RouterSym(val facts: DjangoFacts, val name: String) : Sym
-    private class RouterUrlsSym(val facts: DjangoFacts, val name: String) : Sym
-    private class ClassSym(val facts: DjangoFacts, val cls: ClassFact) : Sym
-    private class FunctionSym(val facts: DjangoFacts, val name: String, val fact: FunctionFact?) : Sym
+    private class ModuleSym(val facts: DjangoFile) : Sym
+    private class ListSym(val facts: DjangoFile, val name: String) : Sym
+    private class RouterSym(val facts: DjangoFile, val name: String) : Sym
+    private class RouterUrlsSym(val facts: DjangoFile, val name: String) : Sym
+    private class ClassSym(val facts: DjangoFile, val cls: ClassFact) : Sym
+    private class FunctionSym(val facts: DjangoFile, val name: String, val fact: FunctionFact?) : Sym
     private class ExternalSym(val dotted: String) : Sym
 
     private class ClassInfo {
         val defined = HashSet<String>()
         val tableMethods = HashSet<HttpMethod>()
         val standardActions = HashSet<String>()
-        val actions = LinkedHashMap<String, Pair<DjangoFacts, ActionFact>>()
+        val actions = LinkedHashMap<String, Pair<DjangoFile, ActionFact>>()
         var httpMethodNames: List<String>? = null
         var queryset: String? = null
         var lookupField: String? = null
@@ -67,12 +69,57 @@ class DjangoLinker(private val options: Options = Options()) {
         var hasUnknownBase = false
     }
 
-    private class Run(private val all: List<DjangoFacts>, private val options: Options) {
+    private class Run(private val all: List<DjangoFile>, private val options: Options) {
         private val endpoints = ArrayList<Endpoint>()
         private val diagnostics = ArrayList<Diagnostic>()
-        private val byModule = HashMap<String, DjangoFacts>()
-        private val bySuffix = HashMap<String, MutableList<DjangoFacts>>()
-        private val registrationsByRouter = HashMap<String, MutableList<Pair<DjangoFacts, Registration>>>()
+        private val byModule = HashMap<String, DjangoFile>()
+        private val bySuffix = HashMap<String, MutableList<DjangoFile>>()
+        private val registrationsByRouter = HashMap<String, MutableList<Pair<DjangoFile, Registration>>>()
+        private val evaluator = ExprEvaluator(ModuleTable(all.map { it.entry }))
+
+        private fun eval(file: DjangoFile, expr: Expr): StrValue = evaluator.evaluate(file.entry, expr)
+
+        /** Verbs of a literal method list: upper case names that are HTTP methods, and whether some element was not exact. */
+        private fun methodVerbs(file: DjangoFile, elements: List<Expr>): Pair<List<String>, Boolean> {
+            var dynamic = false
+            val verbs = elements.mapNotNull { element ->
+                when (val value = eval(file, element)) {
+                    is StrValue.Known -> value.text.uppercase().takeIf { HttpMethod.parse(it) != null }
+                    else -> null.also { dynamic = true }
+                }
+            }
+            return verbs to dynamic
+        }
+
+        /** The methods and dynamic flag the decorators of a function view give, replayed in decorator order. */
+        private fun functionMethods(file: DjangoFile, fact: FunctionFact): Pair<List<String>?, Boolean> {
+            var methods: List<String>? = null
+            var dynamic = false
+            for (step in fact.steps) {
+                when (step) {
+                    is FixedMethods -> methods = methods ?: step.verbs
+                    is DefaultMethods -> methods = step.verbs
+                    DynamicMethods -> dynamic = true
+                    is ListedMethods -> {
+                        val (verbs, dyn) = methodVerbs(file, step.elements)
+                        methods = verbs
+                        dynamic = dynamic || dyn
+                    }
+                }
+            }
+            return methods to dynamic
+        }
+
+        private fun actionMapOf(file: DjangoFile, entries: List<Pair<Expr, Expr>>?): Map<String, String>? {
+            if (entries == null) return null
+            val map = LinkedHashMap<String, String>()
+            entries.forEach { (k, v) ->
+                val key = eval(file, k)
+                val value = eval(file, v)
+                if (key is StrValue.Known && value is StrValue.Known) map[key.text] = value.text
+            }
+            return map
+        }
 
         init {
             all.forEach { facts ->
@@ -99,12 +146,12 @@ class DjangoLinker(private val options: Options = Options()) {
 
         // --- Roots ---------------------------------------------------------------------------------------------------
 
-        private fun rootModules(): List<DjangoFacts> {
+        private fun rootModules(): List<DjangoFile> {
             val configured = all.filter { it.rootUrlconf != null }
             if (configured.isNotEmpty()) {
-                val roots = LinkedHashMap<String, DjangoFacts>()
+                val roots = LinkedHashMap<String, DjangoFile>()
                 configured.forEach { settings ->
-                    val value = settings.rootUrlconf!!
+                    val value = eval(settings, settings.rootUrlconf!!)
                     val module = (value as? StrValue.Known)?.let { findModule(it.text) }
                     if (module == null) diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, null, value.text)
                     else roots.putIfAbsent(module.path, module)
@@ -119,13 +166,13 @@ class DjangoLinker(private val options: Options = Options()) {
 
         private fun referencedPaths(): Set<String> {
             val paths = HashSet<String>()
-            fun scan(owner: DjangoFacts, items: List<ListItem>) {
+            fun scan(owner: DjangoFile, items: List<ListItem>) {
                 items.forEach { item ->
                     when (item) {
                         is SpliceItem -> pathOf(lookup(owner, item.ref))?.takeIf { it != owner.path }?.let { paths += it }
                         is RouteItem -> (item.target as? IncludeTarget)?.let { include ->
                             when (val spec = include.spec) {
-                                is ModuleSpec -> (spec.name as? StrValue.Known)?.let { findModule(it.text) }?.let { paths += it.path }
+                                is ModuleSpec -> (eval(owner, spec.name) as? StrValue.Known)?.let { findModule(it.text) }?.let { paths += it.path }
                                 is RefSpec -> pathOf(lookup(owner, spec.ref))?.takeIf { it != owner.path }?.let { paths += it }
                                 is InlineSpec -> scan(owner, spec.items)
                                 is OpaqueSpec -> Unit
@@ -147,7 +194,7 @@ class DjangoLinker(private val options: Options = Options()) {
 
         // --- Expanding pattern lists ---------------------------------------------------------------------------------
 
-        private fun expand(owner: DjangoFacts, items: List<ListItem>, ctx: Ctx) {
+        private fun expand(owner: DjangoFile, items: List<ListItem>, ctx: Ctx) {
             items.forEach { item ->
                 when (item) {
                     is RouteItem -> route(owner, item, ctx)
@@ -157,7 +204,7 @@ class DjangoLinker(private val options: Options = Options()) {
             }
         }
 
-        private fun splice(owner: DjangoFacts, item: SpliceItem, ctx: Ctx) {
+        private fun splice(owner: DjangoFile, item: SpliceItem, ctx: Ctx) {
             when (val sym = lookup(owner, item.ref)) {
                 is ListSym -> enter(sym.facts, listKey(sym.facts, sym.name), sym.facts.patternLists.getValue(sym.name), ctx, null, owner, item.loc)
                 is RouterUrlsSym -> router(sym, ctx, null, owner, item.loc)
@@ -166,7 +213,7 @@ class DjangoLinker(private val options: Options = Options()) {
         }
 
         private fun enter(
-            facts: DjangoFacts, key: String, items: List<ListItem>, ctx: Ctx, namespace: String?, at: DjangoFacts, loc: Loc,
+            facts: DjangoFile, key: String, items: List<ListItem>, ctx: Ctx, namespace: String?, at: DjangoFile, loc: Loc,
         ) {
             if (key in ctx.chain || ctx.depth >= Limits.MAX_URLCONF_DEPTH) {
                 diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, source(at, loc), key)
@@ -176,21 +223,22 @@ class DjangoLinker(private val options: Options = Options()) {
             expand(facts, items, next)
         }
 
-        private fun route(owner: DjangoFacts, item: RouteItem, ctx: Ctx) {
+        private fun route(owner: DjangoFile, item: RouteItem, ctx: Ctx) {
             val source = source(owner, item.loc)
             val isInclude = item.target is IncludeTarget
+            val route = eval(owner, item.route)
             // Correct or absent: a route whose text is not fully known is left out and reported, never listed approximately.
-            if (!item.route.isExact) {
-                val code = if (isInclude) DiagnosticCode.DYNAMIC_PREFIX else item.route.reason ?: DiagnosticCode.DYNAMIC_VALUE
-                diagnostics += warning(code, source, item.route.text)
+            if (!route.isExact) {
+                val code = if (isInclude) DiagnosticCode.DYNAMIC_PREFIX else route.reason ?: DiagnosticCode.DYNAMIC_VALUE
+                diagnostics += warning(code, source, route.text)
                 return
             }
             val piece = when (item.kind) {
-                RouteKind.PATH -> RouteText.fromPath(item.route.text)
-                RouteKind.REGEX -> RouteText.fromRegex(item.route.text)
+                RouteKind.PATH -> RouteText.fromPath(route.text)
+                RouteKind.REGEX -> RouteText.fromRegex(route.text)
             }
             if (piece.unsupported) {
-                diagnostics += warning(DiagnosticCode.UNSUPPORTED_REGEX, source, item.route.text)
+                diagnostics += warning(DiagnosticCode.UNSUPPORTED_REGEX, source, route.text)
                 return
             }
             val next = ctx.with(prefix = ctx.prefix + piece.text, params = ctx.params + piece.params)
@@ -200,11 +248,12 @@ class DjangoLinker(private val options: Options = Options()) {
             }
         }
 
-        private fun include(owner: DjangoFacts, item: RouteItem, target: IncludeTarget, ctx: Ctx) {
-            fun namespaceOf(module: DjangoFacts?): String? =
-                (target.namespace ?: target.appName ?: module?.appName)?.text?.takeIf { it.isNotEmpty() }
+        private fun include(owner: DjangoFile, item: RouteItem, target: IncludeTarget, ctx: Ctx) {
+            fun namespaceOf(module: DjangoFile?): String? =
+                (target.namespace?.let { eval(owner, it) } ?: target.appName?.let { eval(owner, it) } ?: module?.appName?.let { eval(module, it) })
+                    ?.text?.takeIf { it.isNotEmpty() }
 
-            fun enterModule(module: DjangoFacts) {
+            fun enterModule(module: DjangoFile) {
                 val items = module.patternLists[DjangoCatalog.URLPATTERNS]
                 if (items == null) diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, source(owner, item.loc), module.module)
                 else enter(module, listKey(module, DjangoCatalog.URLPATTERNS), items, ctx, namespaceOf(module), owner, item.loc)
@@ -212,8 +261,9 @@ class DjangoLinker(private val options: Options = Options()) {
 
             when (val spec = target.spec) {
                 is ModuleSpec -> {
-                    val module = (spec.name as? StrValue.Known)?.let { findModule(it.text) }
-                    if (module == null) diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, source(owner, item.loc), spec.name.text)
+                    val name = eval(owner, spec.name)
+                    val module = (name as? StrValue.Known)?.let { findModule(it.text) }
+                    if (module == null) diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, source(owner, item.loc), name.text)
                     else enterModule(module)
                 }
                 is InlineSpec -> enter(owner, "${owner.path}#inline@${item.loc.offset}", spec.items, ctx, namespaceOf(null), owner, item.loc)
@@ -234,12 +284,12 @@ class DjangoLinker(private val options: Options = Options()) {
         }
 
         /** An opaque sub-application such as the admin site: one entry at its mount point, never expanded. */
-        private fun mount(owner: DjangoFacts, item: RouteItem, ctx: Ctx, dotted: String) =
+        private fun mount(owner: DjangoFile, item: RouteItem, ctx: Ctx, dotted: String) =
             add(HttpMethod.ANY, ctx.prefix, Framework.DJANGO, handlerOf(dotted), owner.path, item.loc, routeName(owner, item, ctx), ctx.params)
 
         // --- Views ---------------------------------------------------------------------------------------------------
 
-        private fun view(owner: DjangoFacts, item: RouteItem, target: ViewTarget, ctx: Ctx) {
+        private fun view(owner: DjangoFile, item: RouteItem, target: ViewTarget, ctx: Ctx) {
             val name = routeName(owner, item, ctx)
             fun emit(method: HttpMethod, framework: Framework, handler: Handler) =
                 add(method, ctx.prefix, framework, handler, owner.path, item.loc, name, ctx.params)
@@ -254,31 +304,31 @@ class DjangoLinker(private val options: Options = Options()) {
                 return
             }
             when (val sym = lookup(owner, ref)) {
-                is ClassSym -> classView(sym.facts, sym.cls, target, ::emit, ::omit)
+                is ClassSym -> classView(sym.facts, sym.cls, actionMapOf(owner, target.actionMap), ::emit, ::omit)
                 is FunctionSym -> {
                     val fact = sym.fact
-                    val methods = fact?.methods?.mapNotNull { HttpMethod.parse(it) }?.distinct().orEmpty().ifEmpty { listOf(HttpMethod.ANY) }
-                    if (fact?.dynamicMethods == true) omit(DiagnosticCode.DYNAMIC_VALUE)
+                    val (declared, dynamicMethods) = fact?.let { functionMethods(sym.facts, it) } ?: (null to false)
+                    val methods = declared?.mapNotNull { HttpMethod.parse(it) }?.distinct().orEmpty().ifEmpty { listOf(HttpMethod.ANY) }
+                    if (dynamicMethods) omit(DiagnosticCode.DYNAMIC_VALUE)
                     else methods.forEach { emit(it, if (fact?.isApiView == true) Framework.DRF else Framework.DJANGO, handlerOf("${sym.facts.module}.${sym.name}")) }
                 }
                 is ExternalSym ->
-                    if (target.asView) externalClassView(sym.dotted, target, ::emit, ::omit)
+                    if (target.asView) externalClassView(sym.dotted, actionMapOf(owner, target.actionMap), ::emit, ::omit)
                     else emit(HttpMethod.ANY, Framework.DJANGO, handlerOf(sym.dotted))
                 else -> omit(DiagnosticCode.UNRESOLVED_VIEW)
             }
         }
 
         private fun classView(
-            facts: DjangoFacts,
+            facts: DjangoFile,
             cls: ClassFact,
-            target: ViewTarget,
+            map: Map<String, String>?,
             emit: (HttpMethod, Framework, Handler) -> Unit,
             omit: (DiagnosticCode) -> Unit,
         ) {
             val info = classInfo(facts, cls)
             val qualified = "${facts.module}.${cls.name}"
             val framework = if (info.isDrf) Framework.DRF else Framework.DJANGO
-            val map = target.actionMap
             if (map != null) {
                 map.forEach { (verb, action) ->
                     HttpMethod.parse(verb)?.let { emit(it, framework, Handler("${cls.name}.$action", "$qualified.$action")) }
@@ -291,14 +341,13 @@ class DjangoLinker(private val options: Options = Options()) {
 
         private fun externalClassView(
             dotted: String,
-            target: ViewTarget,
+            map: Map<String, String>?,
             emit: (HttpMethod, Framework, Handler) -> Unit,
             omit: (DiagnosticCode) -> Unit,
         ) {
             val info = ClassInfo().also { external(it, dotted) }
             val framework = if (info.isDrf) Framework.DRF else Framework.DJANGO
             val handler = handlerOf(dotted)
-            val map = target.actionMap
             if (map != null) {
                 map.forEach { (verb, action) ->
                     HttpMethod.parse(verb)?.let { emit(it, framework, Handler("${handler.name}.$action", "$dotted.$action")) }
@@ -317,16 +366,16 @@ class DjangoLinker(private val options: Options = Options()) {
 
         // --- Class analysis ------------------------------------------------------------------------------------------
 
-        private fun classInfo(facts: DjangoFacts, cls: ClassFact): ClassInfo = ClassInfo().also { accumulate(facts, cls, it, HashSet()) }
+        private fun classInfo(facts: DjangoFile, cls: ClassFact): ClassInfo = ClassInfo().also { accumulate(facts, cls, it, HashSet()) }
 
-        private fun accumulate(facts: DjangoFacts, cls: ClassFact, info: ClassInfo, seen: MutableSet<ClassFact>) {
+        private fun accumulate(facts: DjangoFile, cls: ClassFact, info: ClassInfo, seen: MutableSet<ClassFact>) {
             if (!seen.add(cls)) return
             info.defined += cls.methods
             cls.actions.forEach { info.actions.putIfAbsent(it.methodName, facts to it) }
-            if (info.httpMethodNames == null) info.httpMethodNames = cls.httpMethodNames
+            if (info.httpMethodNames == null) info.httpMethodNames = cls.httpMethodExprs?.let { methodVerbs(facts, it).first.map { verb -> verb.lowercase() } }
             if (info.queryset == null) info.queryset = cls.queryset
-            if (info.lookupField == null) info.lookupField = cls.lookupField
-            if (info.lookupUrlKwarg == null) info.lookupUrlKwarg = cls.lookupUrlKwarg
+            if (info.lookupField == null) info.lookupField = cls.lookupField?.let { (eval(facts, it) as? StrValue.Known)?.text }
+            if (info.lookupUrlKwarg == null) info.lookupUrlKwarg = cls.lookupUrlKwarg?.let { (eval(facts, it) as? StrValue.Known)?.text }
             cls.bases.forEach { base ->
                 when (val sym = lookup(facts, base)) {
                     is ClassSym -> accumulate(sym.facts, sym.cls, info, seen)
@@ -350,11 +399,11 @@ class DjangoLinker(private val options: Options = Options()) {
 
         // --- DRF routers ---------------------------------------------------------------------------------------------
 
-        private fun router(sym: RouterUrlsSym, ctx: Ctx, namespace: String?, at: DjangoFacts, loc: Loc) {
+        private fun router(sym: RouterUrlsSym, ctx: Ctx, namespace: String?, at: DjangoFile, loc: Loc) {
             val decl = sym.facts.routers.getValue(sym.name)
             val scoped = Ctx(ctx.prefix, ctx.params, ctx.problems, ctx.namespaces + listOfNotNull(namespace), ctx.chain, ctx.depth)
             registrationsByRouter[routerKey(sym.facts, sym.name)].orEmpty().forEach { (owner, registration) ->
-                rows(owner, registration, decl, scoped)
+                rows(owner, registration, sym.facts, decl, scoped)
             }
             if (decl.includeRootView) {
                 rowEndpoints(
@@ -392,10 +441,10 @@ class DjangoLinker(private val options: Options = Options()) {
             }
         }
 
-        private fun rows(owner: DjangoFacts, registration: Registration, decl: RouterDecl, ctx: Ctx) {
+        private fun rows(owner: DjangoFile, registration: Registration, declFile: DjangoFile, decl: RouterDecl, ctx: Ctx) {
             val at = source(owner, registration.loc)
             val info: ClassInfo
-            val classFacts: DjangoFacts?
+            val classFacts: DjangoFile?
             val qualified: String
             when (val sym = lookup(owner, registration.viewset)) {
                 is ClassSym -> {
@@ -419,19 +468,21 @@ class DjangoLinker(private val options: Options = Options()) {
                 return
             }
             // The prefix and trailing slash shape every row of this registration, so a doubt about them omits all of it.
-            for (value in listOf(registration.prefix, decl.trailingSlash)) {
+            val prefixValue = eval(owner, registration.prefix)
+            val slashValue = eval(declFile, decl.trailingSlash)
+            for (value in listOf(prefixValue, slashValue)) {
                 if (!value.isExact) {
                     diagnostics += warning(value.reason ?: DiagnosticCode.DYNAMIC_VALUE, at, value.text)
                     return
                 }
             }
-            val basenameValue = registration.basename ?: info.queryset?.lowercase()?.let { StrValue.Known(it) }
+            val basenameValue = registration.basename?.let { eval(owner, it) } ?: info.queryset?.lowercase()?.let { StrValue.Known(it) }
             if (basenameValue != null && !basenameValue.isExact) diagnostics += warning(DiagnosticCode.DYNAMIC_VALUE, at, basenameValue.text)
             val basename = (basenameValue as? StrValue.Known)?.text
             val lookupName = info.lookupUrlKwarg ?: info.lookupField ?: DjangoCatalog.DEFAULT_LOOKUP_FIELD
             val lookupGroup = "(?P<$lookupName>${DjangoCatalog.LOOKUP_VALUE_REGEX})"
-            val slash = decl.trailingSlash.text
-            val prefix = registration.prefix.text
+            val slash = slashValue.text
+            val prefix = prefixValue.text
 
             /** The row's route as a template, or null (and a diagnostic) when the regular expression is not exactly convertible. */
             fun piece(rest: String, shown: String): RoutePiece? {
@@ -449,9 +500,9 @@ class DjangoLinker(private val options: Options = Options()) {
             }
 
             standardRow(slash, DjangoCatalog.LIST_ROUTE_MAP, "list")
-            dynamicRows(info, qualified, false, "", ::piece, basename, decl, ctx, at)
+            dynamicRows(info, qualified, false, "", ::piece, basename, decl, slash, ctx, at)
             standardRow("/$lookupGroup$slash", DjangoCatalog.DETAIL_ROUTE_MAP, "detail")
-            dynamicRows(info, qualified, true, "/$lookupGroup", ::piece, basename, decl, ctx, at)
+            dynamicRows(info, qualified, true, "/$lookupGroup", ::piece, basename, decl, slash, ctx, at)
         }
 
         /** `@action` routes; DRF orders them by method name because it collects them with inspect.getmembers. */
@@ -463,35 +514,39 @@ class DjangoLinker(private val options: Options = Options()) {
             piece: (String, String) -> RoutePiece?,
             basename: String?,
             decl: RouterDecl,
+            slash: String,
             ctx: Ctx,
             at: SourceRef,
         ) {
             info.actions.entries.sortedBy { it.key }.forEach { (_, owned) ->
                 val (actionFacts, action) = owned
                 val here = SourceRef(actionFacts.path, action.loc.offset, action.loc.line.coerceAtLeast(1))
-                if (action.detail == null || !action.urlPath.isExact || action.dynamicMethods) {
+                val urlPath = eval(actionFacts, action.urlPath)
+                val parsed = action.methodExprs?.let { methodVerbs(actionFacts, it) }
+                val dynamicMethods = action.methodsPresent && (parsed == null || parsed.second)
+                if (action.detail == null || !urlPath.isExact || dynamicMethods) {
                     if (action.detail == null || action.detail == detail) diagnostics += warning(DiagnosticCode.UNRESOLVED_VIEW, here, action.methodName)
                     return@forEach
                 }
                 if (action.detail != detail) return@forEach
-                val rendered = piece("$lookupPart/${action.urlPath.text}${decl.trailingSlash.text}", action.urlPath.text) ?: return@forEach
-                val name = (action.urlName as? StrValue.Known)?.text?.let { urlName -> basename?.let { "$it-$urlName" } }
-                val methods = action.methods.mapNotNull { HttpMethod.parse(it) }.map { it to "$qualified.${action.methodName}" }
+                val rendered = piece("$lookupPart/${urlPath.text}$slash", urlPath.text) ?: return@forEach
+                val name = (eval(actionFacts, action.urlName) as? StrValue.Known)?.text?.let { urlName -> basename?.let { "$it-$urlName" } }
+                val methods = (parsed?.first ?: action.defaultMethods).mapNotNull { HttpMethod.parse(it) }.map { it to "$qualified.${action.methodName}" }
                 rowEndpoints(ExpandedRow(rendered.text, rendered.params, methods, name, actionFacts.path, action.loc), decl, ctx)
             }
         }
 
         // --- Reference resolution ------------------------------------------------------------------------------------
 
-        private fun findModule(name: String): DjangoFacts? = byModule[name] ?: bySuffix[name]?.minByOrNull { it.module.length }
+        private fun findModule(name: String): DjangoFile? = byModule[name] ?: bySuffix[name]?.minByOrNull { it.module.length }
 
-        private fun lookup(facts: DjangoFacts, ref: String, depth: Int = 0): Sym {
+        private fun lookup(facts: DjangoFile, ref: String, depth: Int = 0): Sym {
             val head = ref.substringBefore('.')
             val origin = facts.imports[head] ?: return local(facts, ref)
             return resolveDotted(origin + ref.substring(head.length), depth)
         }
 
-        private fun local(facts: DjangoFacts, ref: String): Sym {
+        private fun local(facts: DjangoFile, ref: String): Sym {
             val parts = ref.split('.')
             return when {
                 parts.size == 1 -> member(facts, parts[0]) ?: FunctionSym(facts, parts[0], null)
@@ -500,7 +555,7 @@ class DjangoLinker(private val options: Options = Options()) {
             }
         }
 
-        private fun member(facts: DjangoFacts, name: String): Sym? = when {
+        private fun member(facts: DjangoFile, name: String): Sym? = when {
             name in facts.patternLists -> ListSym(facts, name)
             name in facts.routers -> RouterSym(facts, name)
             else -> facts.classes[name]?.let { ClassSym(facts, it) } ?: facts.functions[name]?.let { FunctionSym(facts, name, it) }
@@ -527,11 +582,11 @@ class DjangoLinker(private val options: Options = Options()) {
 
         // --- Small helpers -------------------------------------------------------------------------------------------
 
-        private fun routerKey(facts: DjangoFacts, name: String) = "${facts.path}#$name"
+        private fun routerKey(facts: DjangoFile, name: String) = "${facts.path}#$name"
 
-        private fun listKey(facts: DjangoFacts, name: String) = "${facts.path}#list:$name"
+        private fun listKey(facts: DjangoFile, name: String) = "${facts.path}#list:$name"
 
-        private fun source(facts: DjangoFacts, loc: Loc) = SourceRef(facts.path, loc.offset, loc.line.coerceAtLeast(1))
+        private fun source(facts: DjangoFile, loc: Loc) = SourceRef(facts.path, loc.offset, loc.line.coerceAtLeast(1))
 
         private fun warning(code: DiagnosticCode, source: SourceRef?, vararg args: String) =
             Diagnostic(Severity.WARNING, code, args.toList(), source)
@@ -539,8 +594,8 @@ class DjangoLinker(private val options: Options = Options()) {
         private fun handlerOf(qualified: String) = Handler(qualified.substringAfterLast('.'), qualified)
 
         /** `shop:detail`: instance namespaces joined with the route name; null when the route has no (exactly known) name. */
-        private fun routeName(owner: DjangoFacts, item: RouteItem, ctx: Ctx): String? {
-            val name = item.name ?: return null
+        private fun routeName(owner: DjangoFile, item: RouteItem, ctx: Ctx): String? {
+            val name = item.name?.let { eval(owner, it) } ?: return null
             if (name !is StrValue.Known) {
                 diagnostics += warning(DiagnosticCode.DYNAMIC_VALUE, source(owner, item.loc), name.text)
                 return null

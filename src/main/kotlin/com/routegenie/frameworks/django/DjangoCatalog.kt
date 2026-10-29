@@ -16,9 +16,13 @@ internal object DjangoCatalog {
 
     /**
      * Words whose presence in a file makes it a candidate; looked up in the word index, so no file is parsed for this.
-     * `register` finds files that only add viewsets to a router imported from elsewhere.
+     * `register` finds files that only add viewsets to a router imported from elsewhere. The framework's own name is not a
+     * word (every models and admin file mentions it): view modules are reached from the url modules instead.
      */
-    val CANDIDATE_WORDS = listOf("django", "rest_framework", "ROOT_URLCONF", "register")
+    val CANDIDATE_WORDS = listOf("ROOT_URLCONF", "urlpatterns", "register", "DefaultRouter", "SimpleRouter")
+
+    /** What a candidate's text must contain before it is parsed; `register` is a common word, a call of it is not. */
+    val TEXT_MARKERS = CANDIDATE_WORDS.map { if (it == "register") ".register(" else it }
 
     const val SETTING_ROOT_URLCONF = "ROOT_URLCONF"
     const val URLPATTERNS = "urlpatterns"

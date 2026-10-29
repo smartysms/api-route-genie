@@ -117,7 +117,8 @@ class DrfRoutesTest : DjangoTestBase() {
 
     fun testFormatSuffixVariantsAreCollapsedByDefaultAndAvailableOnRequest() {
         val files = listOf("urls.py" to head + "class ItemViewSet(viewsets.ReadOnlyModelViewSet):\n    pass\n\nrouter = DefaultRouter()\nrouter.register('items', ItemViewSet, basename='i')\nurlpatterns = [path('', include(router.urls))]\n")
-        val facts = files.mapNotNull { (p, t) -> provider.extract(myFixture.addFileToProject(p, t)) }
+        files.forEach { (p, t) -> myFixture.addFileToProject(p, t) }
+        val facts = com.routegenie.testing.ProviderPipeline.collect(project, provider)
         val plain = DjangoLinker().link(facts)
         val suffixed = DjangoLinker(DjangoLinker.Options(emitFormatSuffixVariants = true)).link(facts)
         assertEquals(listOf("GET /items/", "GET /items/{pk}/", "GET /"), brief(plain))

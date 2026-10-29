@@ -6,6 +6,7 @@ import com.routegenie.frameworks.common.LinkSupport
 import com.routegenie.frameworks.common.Primitive
 import com.routegenie.frameworks.common.PrimitiveKind
 import com.routegenie.frameworks.common.PyModuleIndex
+import com.routegenie.frameworks.common.PyResolver
 import com.routegenie.frameworks.common.PyRouteFacts
 import com.routegenie.frameworks.common.RefFact
 import com.routegenie.frameworks.common.SourcePos
@@ -57,7 +58,7 @@ internal object FastApiLinker {
     private class Acc(val path: StrValue, val tags: List<String>, val deprecated: Boolean, val blocker: DiagnosticCode?)
 
     fun link(facts: Collection<FileFacts>): LinkResult {
-        val files = facts.filterIsInstance<PyRouteFacts>().filter { it.providerId == FastApiCatalog.PROVIDER_ID }.sortedBy { it.path }
+        val files = PyResolver.resolve(facts, FastApiCatalog.PROVIDER_ID).sortedBy { it.path }
         val index = PyModuleIndex(files)
         val diagnostics = LinkedHashSet<Diagnostic>()
         val endpoints = LinkedHashMap<String, Endpoint>()

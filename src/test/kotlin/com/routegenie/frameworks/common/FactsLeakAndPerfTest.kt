@@ -7,11 +7,13 @@ import com.intellij.psi.PsiFile
 import com.routegenie.Limits
 import com.routegenie.discovery.FileFacts
 import com.routegenie.discovery.RouteProvider
+import com.routegenie.discovery.SourceFacts
 import com.routegenie.frameworks.fastapi.FastApiRouteProvider
 import com.routegenie.frameworks.flask.FlaskRouteProvider
 import com.routegenie.testing.LeakProbe
 import com.routegenie.testing.ObjectGraph
 import com.routegenie.testing.PerfBudget
+import com.routegenie.testing.ProviderPipeline
 import com.routegenie.testing.PythonPlatformTestCase
 import java.lang.ref.WeakReference
 
@@ -40,24 +42,28 @@ class FactsLeakAndPerfTest : PythonPlatformTestCase() {
 
     private fun file(path: String, text: String): PsiFile = pythonFile(path, text)
 
+    private fun located(psi: PsiFile, facts: SourceFacts): FileFacts = ProviderPipeline.locate(psi, facts)
+
     private fun forbidden() = arrayOf(PsiElement::class.java, VirtualFile::class.java, Project::class.java)
 
     fun testFastApiFactsAndSnapshotHoldNoPsi() {
-        val facts = fastApi.extract(file("main.py", fastApiText))!!
+        val psi = file("main.py", fastApiText)
+        val facts = fastApi.extract(psi)!!
         ObjectGraph.assertNoInstanceOf("fastapi facts", facts, *forbidden())
-        ObjectGraph.assertNoInstanceOf("fastapi link result", fastApi.link(listOf(facts)), *forbidden())
+        ObjectGraph.assertNoInstanceOf("fastapi link result", fastApi.link(listOf(located(psi, facts))), *forbidden())
     }
 
     fun testFlaskFactsAndSnapshotHoldNoPsi() {
-        val facts = flask.extract(file("app.py", flaskText))!!
+        val psi = file("app.py", flaskText)
+        val facts = flask.extract(psi)!!
         ObjectGraph.assertNoInstanceOf("flask facts", facts, *forbidden())
-        ObjectGraph.assertNoInstanceOf("flask link result", flask.link(listOf(facts)), *forbidden())
+        ObjectGraph.assertNoInstanceOf("flask link result", flask.link(listOf(located(psi, facts))), *forbidden())
     }
 
     fun testFactsAndLinkResultsAreCollectedWhenDropped() {
         val psi = file("main.py", fastApiText)
-        var facts: FileFacts? = fastApi.extract(psi)
-        var result: Any? = fastApi.link(listOf(facts!!))
+        var facts: SourceFacts? = fastApi.extract(psi)
+        var result: Any? = fastApi.link(listOf(located(psi, facts!!)))
         val factsRef = WeakReference(facts)
         val resultRef = WeakReference(result)
         facts = null
@@ -70,10 +76,10 @@ class FactsLeakAndPerfTest : PythonPlatformTestCase() {
         val fastApiPsi = file("main.py", fastApiText)
         val flaskPsi = file("app.py", flaskText)
         LeakProbe.assertNoHeapGrowth("fastapi extract+link", maxGrowthBytes = HEAP_TOLERANCE_BYTES, warmups = 30, iterations = 300) {
-            fastApi.link(listOfNotNull(fastApi.extract(fastApiPsi)))
+            fastApi.link(listOfNotNull(fastApi.extract(fastApiPsi)?.let { located(fastApiPsi, it) }))
         }
         LeakProbe.assertNoHeapGrowth("flask extract+link", maxGrowthBytes = HEAP_TOLERANCE_BYTES, warmups = 30, iterations = 300) {
-            flask.link(listOfNotNull(flask.extract(flaskPsi)))
+            flask.link(listOfNotNull(flask.extract(flaskPsi)?.let { located(flaskPsi, it) }))
         }
     }
 
@@ -102,13 +108,14 @@ class FactsLeakAndPerfTest : PythonPlatformTestCase() {
         val edited = file(name, text)
         // More files stand for the rest of the project, already extracted and cached.
         val others: List<FileFacts> = (0 until OTHER_FILES).mapNotNull { i ->
-            provider.extract(file("$label-other$i.py", text.replace("/big", "/o$i")))
+            val other = file("$label-other$i.py", text.replace("/big", "/o$i"))
+            provider.extract(other)?.let { located(other, it) }
         }
         PerfBudget.assertWithin(label, Limits.BUDGET_REFRESH_ONE_FILE_MS) {
-            val facts = provider.extract(edited)!!
+            val facts = located(edited, provider.extract(edited)!!)
             provider.link(others + facts)
         }
-        val total = provider.link(others + provider.extract(edited)!!).endpoints.size
+        val total = provider.link(others + located(edited, provider.extract(edited)!!)).endpoints.size
         assertTrue("expected the routes of every file, got $total", total >= ROUTES * (OTHER_FILES + 1))
     }
 

@@ -1,65 +1,90 @@
 package com.routegenie.frameworks.common
 
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.project.guessProjectDir
-import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiFile
 import com.intellij.psi.impl.cache.CacheManager
 import com.intellij.psi.search.FilenameIndex
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.UsageSearchContext
+import com.intellij.psi.stubs.StubIndex
+import com.intellij.util.Processor
 import com.jetbrains.python.psi.PyFile
-import com.jetbrains.python.psi.resolve.QualifiedNameFinder
+import com.jetbrains.python.psi.stubs.PyDecoratorStubIndex
 
-/** Everything the two Python providers do identically around the extractor. */
+/** Everything the Python providers do identically around the extractor: finding candidates, the text prefilter, extraction. */
 object PyProviderSupport {
     private const val PYTHON_EXTENSION = "py"
-    private const val PACKAGE_FILE = "__init__.py"
-    private const val PACKAGE_SUFFIX = ".__init__"
+    private const val INIT_FILE = "__init__.py"
+    private const val INIT_SUFFIX = ".$PYTHON_EXTENSION"
 
     /**
-     * Files whose code mentions one of the framework's [words], from the word index: no parsing. A file that only
-     * imports a router from another module and decorates with it is found through the shared words (for example `route`).
+     * Files that may declare or attach routes, without parsing any. Two sources, both persisted platform indexes:
+     * the word index for constructors and attachment calls (`APIRouter`, `include_router`), and the decorator stub index for
+     * route decorators (`router.get`, `app.route`), which finds routes in a file that never names the framework because its
+     * router is imported from another module. The framework's own name is deliberately not a word: it would select every
+     * file that imports it.
+     *
+     * Not found: a decorator that is not written as `<name>.<verb>` (a router stored in a dict, a `getattr`), and files
+     * excluded by [PyCandidateRules].
      */
-    fun candidates(project: Project, words: Collection<String>): Collection<VirtualFile> {
+    fun candidates(project: Project, spec: PyExtractionSpec): List<VirtualFile> =
+        candidatesByWords(project, spec.candidateWords, spec.decoratorMethods)
+
+    fun candidatesByWords(project: Project, words: Collection<String>, decoratorMethods: Set<String> = emptySet()): List<VirtualFile> {
         val scope = GlobalSearchScope.projectScope(project)
-        val cache = CacheManager.getInstance(project)
         val found = LinkedHashSet<VirtualFile>()
+        val cache = CacheManager.getInstance(project)
         for (word in words) {
-            for (file in cache.getVirtualFilesWithWord(word, UsageSearchContext.IN_CODE, scope, true)) {
-                if (file.extension == PYTHON_EXTENSION) found += file
-            }
+            found += cache.getVirtualFilesWithWord(word, UsageSearchContext.IN_CODE, scope, true).filter { it.extension == PYTHON_EXTENSION }
         }
-        // Package files re-export routers without naming the framework; their imports are needed to follow a name.
-        found += FilenameIndex.getVirtualFilesByName(PACKAGE_FILE, scope)
-        return found
+        if (decoratorMethods.isNotEmpty()) found += decoratorFiles(project, decoratorMethods, scope)
+        return PyCandidateRules.select(project, found)
+    }
+
+    /** Files that carry a decorator whose last name segment is one of [methods], from the stub index (no AST is loaded). */
+    fun decoratorFiles(project: Project, methods: Set<String>, scope: GlobalSearchScope): Set<VirtualFile> {
+        val index = StubIndex.getInstance()
+        val key = PyDecoratorStubIndex.KEY
+        val keys = ArrayList<String>()
+        index.processAllKeys(key, project, Processor<String> { name ->
+            if (name.substringAfterLast('.') in methods) keys += name
+            true
+        })
+        val files = LinkedHashSet<VirtualFile>()
+        // Keys can outlive their files; asking with the scope drops the dead ones.
+        for (name in keys) files += index.getContainingFiles(key, name, project, scope)
+        return files
+    }
+
+    /** The project file of a dotted module name (`a.b` is `a/b.py` or `a/b/__init__.py`), matched by path suffix; null when absent. */
+    fun findModuleFile(project: Project, module: String): VirtualFile? {
+        val parts = module.split('.').filter { it.isNotEmpty() }
+        if (parts.isEmpty()) return null
+        val scope = GlobalSearchScope.projectScope(project)
+        val relative = parts.joinToString("/")
+        val modules = FilenameIndex.getVirtualFilesByName(parts.last() + INIT_SUFFIX, scope).filter { it.path.endsWith("/$relative$INIT_SUFFIX") }
+        val packages = FilenameIndex.getVirtualFilesByName(INIT_FILE, scope).filter { it.path.endsWith("/$relative/$INIT_FILE") }
+        return PyCandidateRules.select(project, modules + packages).firstOrNull()
+    }
+
+    /** Whether [file] could contain something the spec extracts: one marker group fully present. No parsing. */
+    fun passesPrefilter(file: PsiFile, spec: PyExtractionSpec): Boolean {
+        val text = file.viewProvider.contents
+        return spec.textMarkers.any { group -> group.all { StringUtil.contains(text, it) } }
     }
 
     /** Extracts one file with [spec]; null for anything that is not a Python file or holds no routing facts. */
-    fun extract(file: PsiFile, spec: PyExtractionSpec): PyRouteFacts? {
+    fun extract(file: PsiFile, spec: PyExtractionSpec): PyFileFacts? {
+        if (!passesPrefilter(file, spec)) return null
         val py = file as? PyFile ?: return null
-        return PyFactsExtractor.extract(py, locationOf(py), spec)
+        return PyFactsExtractor.extract(py, spec)
     }
 
-    fun locationOf(file: PyFile): FileLocation {
-        val virtual = file.virtualFile ?: file.originalFile.virtualFile
-        val isPackage = file.name == PACKAGE_FILE
-        val module = (QualifiedNameFinder.findShortestImportableQName(file)?.toString() ?: moduleFromName(file.name))
-            .removeSuffix(PACKAGE_SUFFIX)
-        return FileLocation(relativePath(file.project, virtual, file.name), module, isPackage)
-    }
-
-    private fun moduleFromName(fileName: String) = fileName.removeSuffix(".$PYTHON_EXTENSION")
-
-    /** Project-relative path with '/', the form a SourceRef uses; falls back to the content root, then the full path. */
-    private fun relativePath(project: Project, file: VirtualFile?, fallback: String): String {
-        if (file == null) return fallback
-        val path = file.path
-        val base = project.guessProjectDir()?.path
-        if (base != null && path.startsWith("$base/")) return path.removePrefix("$base/")
-        val root = ProjectFileIndex.getInstance(project).getContentRootForFile(file)
-        if (root != null && path.startsWith("${root.path}/")) return path.removePrefix("${root.path}/")
-        return path.trimStart('/')
+    /** Like [extract] but without the prefilter, and returning imports and constants of files that declare no routes. */
+    fun extractDependency(file: PsiFile, spec: PyExtractionSpec): PyFileFacts? {
+        val py = file as? PyFile ?: return null
+        return PyFactsExtractor.extract(py, spec, asDependency = true)
     }
 }

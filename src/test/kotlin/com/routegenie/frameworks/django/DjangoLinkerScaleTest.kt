@@ -1,7 +1,11 @@
 package com.routegenie.frameworks.django
 
 import com.routegenie.Limits
-import com.routegenie.model.StrValue
+import com.routegenie.discovery.FileFacts
+import com.routegenie.discovery.LocatedFacts
+import com.routegenie.discovery.core.Expr
+import com.routegenie.discovery.core.ImportBinding
+import com.routegenie.discovery.core.Lit
 import com.routegenie.testing.LeakProbe
 import com.routegenie.testing.PerfBudget
 import org.junit.Assert.assertEquals
@@ -14,24 +18,24 @@ class DjangoLinkerScaleTest {
     private val loc = Loc(0, 1)
 
     /** One settings file, [apps] URL modules of [routesPerApp] routes each, all included from one root module. */
-    private fun syntheticProject(apps: Int, routesPerApp: Int): List<DjangoFacts> {
-        val settings = facts("proj/settings.py", rootUrlconf = StrValue.Known("proj.urls"))
+    private fun syntheticProject(apps: Int, routesPerApp: Int): List<FileFacts> {
+        val settings = facts("proj/settings.py", rootUrlconf = Lit("proj.urls"))
         val root = facts(
             "proj/urls.py",
             lists = mapOf(
                 DjangoCatalog.URLPATTERNS to (0 until apps).map { app ->
-                    RouteItem(RouteKind.PATH, StrValue.Known("app$app/"), IncludeTarget(ModuleSpec(StrValue.Known("app$app.urls")), null, null), null, loc)
+                    RouteItem(RouteKind.PATH, Lit("app$app/"), IncludeTarget(ModuleSpec(Lit("app$app.urls")), null, null), null, loc)
                 },
             ),
         )
         val modules = (0 until apps).map { app ->
             facts(
                 "app$app/urls.py",
-                imports = mapOf("views" to "app$app.views"),
-                appName = StrValue.Known("app$app"),
+                imports = listOf(ImportBinding("views", "app$app", "views")),
+                appName = Lit("app$app"),
                 lists = mapOf(
                     DjangoCatalog.URLPATTERNS to (0 until routesPerApp).map { r ->
-                        RouteItem(RouteKind.PATH, StrValue.Known("r$r/<int:pk>/"), ViewTarget("views.v$r", false), StrValue.Known("n$r"), loc)
+                        RouteItem(RouteKind.PATH, Lit("r$r/<int:pk>/"), ViewTarget("views.v$r", false), Lit("n$r"), loc)
                     },
                 ),
             )
@@ -41,11 +45,14 @@ class DjangoLinkerScaleTest {
 
     private fun facts(
         path: String,
-        imports: Map<String, String> = emptyMap(),
-        rootUrlconf: StrValue? = null,
-        appName: StrValue? = null,
+        imports: List<ImportBinding> = emptyList(),
+        rootUrlconf: Expr? = null,
+        appName: Expr? = null,
         lists: Map<String, List<ListItem>> = emptyMap(),
-    ) = DjangoFacts(path, DjangoModules.moduleOf(path), imports, rootUrlconf, appName, lists, emptyMap(), emptyList(), emptyMap(), emptyMap())
+    ): FileFacts = LocatedFacts(
+        path,
+        DjangoFacts(imports, emptyList(), emptyList(), rootUrlconf, appName, lists, emptyMap(), emptyList(), emptyMap(), emptyMap()),
+    )
 
     @Test
     fun `linking 5000 endpoints stays within the budget`() {
@@ -66,7 +73,7 @@ class DjangoLinkerScaleTest {
 
     @Test
     fun `facts are collectable once linking is done`() {
-        var project: List<DjangoFacts>? = syntheticProject(apps = 3, routesPerApp = 10)
+        var project: List<FileFacts>? = syntheticProject(apps = 3, routesPerApp = 10)
         val ref = WeakReference(project!![2])
         DjangoLinker().link(project)
         project = null
@@ -85,9 +92,9 @@ class DjangoLinkerScaleTest {
         val depth = Limits.MAX_URLCONF_DEPTH + 5
         val modules = (0..depth).map { i ->
             val items = if (i < depth) {
-                listOf(RouteItem(RouteKind.PATH, StrValue.Known("n/"), IncludeTarget(ModuleSpec(StrValue.Known("m${i + 1}.urls")), null, null), null, loc))
+                listOf(RouteItem(RouteKind.PATH, Lit("n/"), IncludeTarget(ModuleSpec(Lit("m${i + 1}.urls")), null, null), null, loc))
             } else {
-                listOf(RouteItem(RouteKind.PATH, StrValue.Known("end/"), ViewTarget("v", false), null, loc))
+                listOf(RouteItem(RouteKind.PATH, Lit("end/"), ViewTarget("v", false), null, loc))
             }
             facts("m$i/urls.py", lists = mapOf(DjangoCatalog.URLPATTERNS to items))
         }

@@ -24,4 +24,17 @@ interface PyExtractionSpec {
 
     /** Whether classes with base classes are recorded (class based views). */
     val capturesClasses: Boolean
+
+    /**
+     * Words that make a file a candidate through the word index: constructors and attachment calls, never the framework's
+     * own name (every file that imports it would qualify). Routes declared by decorators are found through the decorator
+     * index instead, see [decoratorMethods].
+     */
+    val candidateWords: Collection<String>
+
+    /**
+     * Text a candidate must contain before it is parsed: a file passes when every word of at least one group occurs in it.
+     * A cheap `indexOf` scan, a hundred times cheaper than a parse; the groups must cover everything extraction can use.
+     */
+    val textMarkers: List<Set<String>>
 }

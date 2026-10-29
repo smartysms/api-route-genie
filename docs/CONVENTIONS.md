@@ -52,7 +52,8 @@ demand. Enforced by `LayeringTest` for the pure layers.
 - Every `Disposable` is registered with a parent (`toolWindow.disposable`, the project service, or an explicit parent).
   Nothing is registered against the application unless it must live that long.
 - No listener, `Alarm`, `Timer` or coroutine outlives its owner. Scopes are cancelled by `Disposable`.
-- Caches are bounded (`Limits.MAX_*`, least recently used eviction) and keyed by value, not by PSI.
+- Caches are bounded (`Limits.MAX_*`, least recently used eviction; the facts cache by the summed estimated size of its
+  entries, not by their number) and keyed by value, not by PSI.
 - Each phase adds automated tests: weak-reference collectability for pure objects (`LeakProbe.assertCollected`), heap
   growth over repeated runs (`LeakProbe.assertNoHeapGrowth`), and for platform objects the IDE's own `LeakHunter` and
   `Disposer` assertions after closing the tool window or the project.

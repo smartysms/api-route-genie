@@ -1,5 +1,6 @@
 package com.routegenie.frameworks.django
 
+import com.routegenie.discovery.core.Lit
 import com.routegenie.model.DiagnosticCode
 import java.io.File
 
@@ -60,23 +61,28 @@ class DjangoGoldenTest : DjangoTestBase() {
 
     fun testASettingsFileOnlyCarriesTheRootUrlconf() {
         val facts = provider.extract(myFixture.addFileToProject("proj/settings.py", "ROOT_URLCONF = 'proj.urls'\n")) as DjangoFacts
-        assertEquals("proj.urls", facts.rootUrlconf?.text)
+        assertEquals(Lit("proj.urls"), facts.rootUrlconf)
         assertTrue(facts.patternLists.isEmpty())
     }
 
-    fun testCandidateSearchFindsFilesThatMentionTheFramework() {
+    // Candidates are the files that route or attach routes; the framework's name alone selects nothing, and view modules
+    // are reached from the url modules that import them (see DjangoDependencyTest).
+    fun testCandidateSearchFindsRoutingFilesOnly() {
         myFixture.addFileToProject("a/urls.py", "from django.urls import path\nurlpatterns = []\n")
         myFixture.addFileToProject("a/drf.py", "from rest_framework import viewsets\n")
         myFixture.addFileToProject("a/settings.py", "ROOT_URLCONF = 'x'\n")
+        myFixture.addFileToProject("a/routers.py", "from rest_framework.routers import DefaultRouter\nr = DefaultRouter()\n")
         myFixture.addFileToProject("a/other.py", "import os\n")
+        myFixture.addFileToProject("a/models.py", "from django.db import models\n")
         val names = provider.findCandidates(project).map { it.name }.toSet()
-        assertEquals(setOf("urls.py", "drf.py", "settings.py"), names)
+        assertEquals(setOf("urls.py", "settings.py", "routers.py"), names)
     }
 
-    fun testFactsReportPathsRelativeToTheProject() {
-        val facts = provider.extract(myFixture.addFileToProject("pkg/sub/urls.py", "from django.urls import path\nurlpatterns = [path('a/', v)]\n")) as DjangoFacts
-        assertEquals("pkg/sub/urls.py", facts.path)
-        assertEquals("pkg.sub.urls", facts.module)
+    fun testLinkedEndpointsReportPathsRelativeToTheProject() {
+        val result = link("pkg/sub/urls.py" to "from django.urls import path\nfrom . import views\nurlpatterns = [path('a/', views.v)]\n", "pkg/sub/views.py" to "def v(request): ...\n")
+        val endpoint = result.endpoints.single()
+        assertEquals("pkg/sub/urls.py", endpoint.source.path)
+        assertEquals("pkg.sub.views.v", endpoint.handler.qualifiedName)
     }
 
     fun testSourcePointsAtTheRouteCall() {

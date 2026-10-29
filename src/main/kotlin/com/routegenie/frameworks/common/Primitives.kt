@@ -73,6 +73,10 @@ class PrimitiveTable(
     val importRoots: Set<String>,
     val primitives: List<Primitive>,
     override val capturesClasses: Boolean,
+    /** Further candidate words for facts this table cannot derive (base classes of class based views). */
+    extraWords: Set<String> = emptySet(),
+    /** Further marker groups, see [PyExtractionSpec.textMarkers]. */
+    extraMarkerGroups: List<Set<String>> = emptyList(),
 ) : PyExtractionSpec {
     private val byName: Map<String, List<Primitive>> = primitives.groupBy { it.name }
 
@@ -106,12 +110,11 @@ class PrimitiveTable(
     override val stringKeywords: Set<String> = primitives.flatMap { listOfNotNull(it.path, it.prefix, it.label, it.endpoint) }
         .map { it.keyword }.toSet()
 
-    /** The distinct words that identify a candidate file: import roots and the method names of attachments. */
-    val candidateWords: List<String> =
-        (importRoots + names(PrimitiveKind.ATTACH, PrimitiveKind.ROUTE_CALL) + (names(PrimitiveKind.ROUTE_DECORATOR) - GENERIC_VERBS)).toList()
+    /** Constructors and attachment calls; decorators come from the decorator index, the framework's name selects nothing. */
+    override val candidateWords: Collection<String> =
+        (constructorNames + names(PrimitiveKind.ATTACH, PrimitiveKind.ROUTE_CALL) + extraWords).toSet()
 
-    private companion object {
-        /** Verb words are too common in code to select candidates; `route` and `api_route` are not in this set. */
-        val GENERIC_VERBS = HttpMethod.entries.map { it.name.lowercase() }.toSet()
-    }
+    override val textMarkers: List<Set<String>> =
+        (names(PrimitiveKind.ROUTE_DECORATOR, PrimitiveKind.ROUTE_CALL, PrimitiveKind.ATTACH, PrimitiveKind.MOUNT).map { setOf(".$it(") } +
+            constructorNames.map { setOf(it) } + extraMarkerGroups).distinct()
 }

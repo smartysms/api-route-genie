@@ -1,11 +1,11 @@
 package com.routegenie.frameworks.common
 
-import com.intellij.psi.PsiManager
 import com.routegenie.discovery.LinkResult
 import com.routegenie.discovery.RouteProvider
 import com.routegenie.model.Diagnostic
 import com.routegenie.model.DiagnosticCode
 import com.routegenie.model.Endpoint
+import com.routegenie.testing.ProviderPipeline
 import com.routegenie.testing.PythonPlatformTestCase
 import java.io.File
 
@@ -30,14 +30,7 @@ abstract class RouteProviderTestCase(private val provider: RouteProvider) : Pyth
         return discoverAll()
     }
 
-    protected fun discoverAll(): LinkResult {
-        val manager = PsiManager.getInstance(project)
-        val facts = provider.findCandidates(project)
-            .sortedBy { it.path }
-            .mapNotNull { manager.findFile(it) }
-            .mapNotNull { provider.extract(it) }
-        return provider.link(facts)
-    }
+    protected fun discoverAll(): LinkResult = provider.link(ProviderPipeline.collect(project, provider))
 
     /** `GET /path` lines, sorted, for exact list assertions. */
     protected fun routes(result: LinkResult): List<String> =

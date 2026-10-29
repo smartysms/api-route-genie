@@ -8,9 +8,7 @@ import com.jetbrains.python.psi.PyClass
 import com.jetbrains.python.psi.PyExpression
 import com.jetbrains.python.psi.PyExpressionStatement
 import com.jetbrains.python.psi.PyFile
-import com.jetbrains.python.psi.PyFromImportStatement
 import com.jetbrains.python.psi.PyFunction
-import com.jetbrains.python.psi.PyImportStatement
 import com.jetbrains.python.psi.PyKeywordArgument
 import com.jetbrains.python.psi.PyListLiteralExpression
 import com.jetbrains.python.psi.PyParenthesizedExpression
@@ -20,37 +18,39 @@ import com.jetbrains.python.psi.PySetLiteralExpression
 import com.jetbrains.python.psi.PyStarArgument
 import com.jetbrains.python.psi.PyTargetExpression
 import com.jetbrains.python.psi.PyTupleExpression
-import com.routegenie.discovery.ValueEvaluator
-import com.routegenie.discovery.ValueEvaluators
-import com.routegenie.model.StrValue
-
-/** Where a file lives, computed by the provider because it needs project and index access. */
-data class FileLocation(val path: String, val module: String, val isPackage: Boolean)
+import com.intellij.openapi.progress.ProgressManager
+import com.routegenie.Limits
+import com.routegenie.discovery.core.ConstFact
+import com.routegenie.discovery.core.Expr
 
 /**
- * One pass over a Python file producing [PyRouteFacts]. Frameworks are recognized later from import origins, never by
- * resolving, because the project may not have the library installed.
+ * One pass over a Python file producing [PyFileFacts]. Frameworks are recognized later from import origins, never by
+ * resolving, because the project may not have the library installed. The facts depend on the text of the file only:
+ * values stay unevaluated [Expr] trees and imports stay as written, so another file changing never invalidates them.
  */
 object PyFactsExtractor {
-    /** Null when the file holds nothing this provider could use. */
-    fun extract(file: PyFile, location: FileLocation, spec: PyExtractionSpec): PyRouteFacts? {
-        val collector = Collector(file, location, spec, ValueEvaluators.forFile(file))
+    /**
+     * Null when the file holds nothing this provider could use. With [asDependency] a file that declares no routes still
+     * returns its imports and constants, because other files' routes may be built from them.
+     */
+    fun extract(file: PyFile, spec: PyExtractionSpec, asDependency: Boolean = false): PyFileFacts? {
+        val imports = PyExprBuilder.importsOf(file, recursive = true)
+        val collector = Collector(file, spec, imports)
         file.accept(collector)
-        val facts = collector.build()
-        // A package file that only re-exports names (`from .items import router`) still matters to the linker.
-        val reExports = facts.isPackage && (facts.imports.isNotEmpty() || facts.starModules.isNotEmpty())
-        return if (facts.isEmpty && !reExports) null else facts
+        val facts = collector.build(PyExprBuilder.constsOf(file))
+        if (!facts.isEmpty) return facts
+        val supports = facts.imports.isNotEmpty() || facts.stars.isNotEmpty() || facts.consts.isNotEmpty()
+        return if (asDependency && supports) facts else null
     }
 
     private class Collector(
         file: PyFile,
-        private val location: FileLocation,
         private val spec: PyExtractionSpec,
-        private val evaluator: ValueEvaluator,
+        private val importTable: PyExprBuilder.Imports,
     ) : PyRecursiveElementVisitor() {
-        private val lineStarts = lineStartsOf(file.text)
-        private val imports = ArrayList<ImportFact>()
-        private val starModules = ArrayList<String>()
+        private val lineStarts = lineStartsOf(file.viewProvider.contents)
+        private val imports = importTable.bindings
+        private var visited = 0
         private val assignments = ArrayList<AssignFact>()
         private val decorators = ArrayList<DecoratorFact>()
         private val calls = ArrayList<CallStmtFact>()
@@ -58,13 +58,11 @@ object PyFactsExtractor {
         private val scopes = ArrayList<String>()
         private val classNames = ArrayList<String>()
 
-        fun build() = PyRouteFacts(
-            path = location.path,
+        fun build(consts: List<ConstFact>) = PyFileFacts(
             providerId = spec.providerId,
-            module = location.module,
-            isPackage = location.isPackage,
             imports = imports,
-            starModules = starModules,
+            stars = importTable.stars,
+            consts = consts,
             assignments = assignments,
             decorators = decorators,
             calls = calls,
@@ -73,37 +71,10 @@ object PyFactsExtractor {
 
         private val scope: String get() = scopes.joinToString(".")
 
-        override fun visitPyImportStatement(node: PyImportStatement) {
-            for (element in node.importElements) {
-                val qualified = element.importedQName ?: continue
-                val alias = element.asName
-                if (alias != null) {
-                    imports += ImportFact(alias, qualified.toString(), null)
-                } else {
-                    val first = qualified.firstComponent ?: continue
-                    imports += ImportFact(first, first, null)
-                }
-            }
-        }
-
-        override fun visitPyFromImportStatement(node: PyFromImportStatement) {
-            val module = absoluteModule(node.relativeLevel, node.importSourceQName?.toString())
-            if (node.isStarImport) {
-                starModules += module
-                return
-            }
-            for (element in node.importElements) {
-                val name = element.importedQName?.toString() ?: continue
-                imports += ImportFact(element.visibleName ?: name, module, name)
-            }
-        }
-
-        private fun absoluteModule(level: Int, source: String?): String {
-            if (level <= 0) return source.orEmpty()
-            val segments = location.module.split('.').filter { it.isNotEmpty() }
-            val packageSegments = if (location.isPackage) segments else segments.dropLast(1)
-            val base = packageSegments.dropLast(level - 1).joinToString(".")
-            return listOf(base, source.orEmpty()).filter { it.isNotEmpty() }.joinToString(".")
+        override fun visitElement(element: PsiElement) {
+            // A generated file of a megabyte must stay cancellable while it is walked.
+            if (++visited % Limits.CANCEL_CHECK_EVERY_NODES == 0) ProgressManager.checkCanceled()
+            super.visitElement(element)
         }
 
         override fun visitPyAssignmentStatement(node: PyAssignmentStatement) {
@@ -154,7 +125,7 @@ object PyFactsExtractor {
             if (spec.capturesClasses) {
                 val bases = node.superClassExpressions.mapNotNull { refOf(it) }
                 if (bases.isNotEmpty()) {
-                    classes += ClassFact(name, scope, bases, node.methods.mapNotNull { it.name }, methodsAttribute(node), posOf(node))
+                    classes += ClassFact(name, scope, bases, node.methods.mapNotNull { it.name }, null, posOf(node), methodsAttribute(node))
                 }
             }
             scopes += name
@@ -164,11 +135,11 @@ object PyFactsExtractor {
             scopes.removeAt(scopes.lastIndex)
         }
 
-        private fun methodsAttribute(node: PyClass): List<StrValue>? {
+        private fun methodsAttribute(node: PyClass): List<Expr>? {
             for (statement in node.statementList.statements) {
                 val assignment = statement as? PyAssignmentStatement ?: continue
                 if ((assignment.targets.singleOrNull() as? PyTargetExpression)?.name != METHODS_ATTRIBUTE) continue
-                return elementsOf(assignment.assignedValue)?.map { evaluator.evaluate(it) }
+                return elementsOf(assignment.assignedValue)?.map { PyExprBuilder.build(it) }
             }
             return null
         }
@@ -201,14 +172,14 @@ object PyFactsExtractor {
             return when {
                 e is PyBoolLiteralExpression -> ArgFact(bool = e.value)
                 e is PyListLiteralExpression || e is PyTupleExpression || e is PySetLiteralExpression ->
-                    ArgFact(list = elementsOf(e)?.map { evaluator.evaluate(it) })
+                    ArgFact(exprs = elementsOf(e)?.map { PyExprBuilder.build(it) })
                 e is PyReferenceExpression ->
-                    ArgFact(ref = refOf(e), str = if (evaluateName) evaluator.evaluate(e) else null)
+                    ArgFact(ref = refOf(e), expr = if (evaluateName) PyExprBuilder.build(e) else null)
                 e is PyCallExpression -> ArgFact(
                     call = if (depth < MAX_CALL_DEPTH) callFact(e, depth + 1) else null,
-                    str = if (evaluateName) evaluator.evaluate(e) else null,
+                    expr = if (evaluateName) PyExprBuilder.build(e) else null,
                 )
-                else -> ArgFact(str = evaluator.evaluate(e))
+                else -> ArgFact(expr = PyExprBuilder.build(e))
             }
         }
 
@@ -241,7 +212,7 @@ object PyFactsExtractor {
         val parts = ArrayList<String>()
         var current: PsiElement? = expression
         while (current is PyReferenceExpression) {
-            parts += current.referencedName ?: return null
+            parts += (current.referencedName ?: return null).intern()
             current = current.qualifier
         }
         if (current != null || parts.isEmpty()) return null
@@ -250,12 +221,17 @@ object PyFactsExtractor {
     }
 
     private fun lineStartsOf(text: CharSequence): IntArray {
-        val starts = ArrayList<Int>()
-        starts += 0
-        for (i in text.indices) if (text[i] == '\n') starts += i + 1
-        return starts.toIntArray()
+        var starts = IntArray(INITIAL_LINES)
+        var count = 1
+        for (i in text.indices) {
+            if (text[i] != '\n') continue
+            if (count == starts.size) starts = starts.copyOf(count * 2)
+            starts[count++] = i + 1
+        }
+        return starts.copyOf(count)
     }
 
     private const val METHODS_ATTRIBUTE = "methods"
     private const val MAX_CALL_DEPTH = 1
+    private const val INITIAL_LINES = 256
 }

@@ -8,6 +8,7 @@ import com.routegenie.frameworks.common.LinkSupport
 import com.routegenie.frameworks.common.Primitive
 import com.routegenie.frameworks.common.PrimitiveKind
 import com.routegenie.frameworks.common.PyModuleIndex
+import com.routegenie.frameworks.common.PyResolver
 import com.routegenie.frameworks.common.PyRouteFacts
 import com.routegenie.frameworks.common.RefFact
 import com.routegenie.frameworks.common.SourcePos
@@ -61,7 +62,7 @@ internal object FlaskLinker {
     private class ViewTraits(val kind: ViewKind, val verbs: List<HttpMethod>, val methodsAttr: List<StrValue>?)
 
     fun link(facts: Collection<FileFacts>): LinkResult {
-        val files = facts.filterIsInstance<PyRouteFacts>().filter { it.providerId == FlaskCatalog.PROVIDER_ID }.sortedBy { it.path }
+        val files = PyResolver.resolve(facts, FlaskCatalog.PROVIDER_ID).sortedBy { it.path }
         val index = PyModuleIndex(files)
         val diagnostics = LinkedHashSet<Diagnostic>()
         val endpoints = LinkedHashMap<String, Endpoint>()

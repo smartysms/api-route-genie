@@ -40,10 +40,11 @@ abstract class EngineTestCase : PythonPlatformTestCase() {
     protected fun engine(
         vararg providers: RouteProvider,
         debounceMs: Long = Limits.REFRESH_DEBOUNCE_MS,
-        cacheCapacity: Int = Limits.MAX_CACHED_FILE_FACTS,
+        cacheWeightLimit: Long = Limits.MAX_FACTS_CACHE_BYTES,
         parent: Disposable = owner,
         active: Boolean = true,
-    ) = RouteDiscoveryEngine(project, scope, parent, { providers.toList() }, debounceMs, cacheCapacity, active)
+        parallelism: Int = Limits.extractParallelism(Runtime.getRuntime().availableProcessors()),
+    ) = RouteDiscoveryEngine(project, scope, parent, { providers.toList() }, debounceMs, cacheWeightLimit, active, parallelism)
 
     /** Runs the suspend refresh on a pool thread, the way the service does, so the test thread (the UI thread) is free. */
     protected fun RouteDiscoveryEngine.refreshBlocking() {
