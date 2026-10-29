@@ -28,6 +28,13 @@
         <projectService serviceImplementation="com.routegenie.discovery.core.RouteDiscoveryService"/>
         <toolWindow id="RouteGenie" anchor="right" icon="/icons/routeGenie.svg" canCloseContents="false"
                     factoryClass="com.routegenie.ui.RouteGenieToolWindowFactory"/>
+        <codeInsight.lineMarkerProvider language="Python"
+                                        implementationClass="com.routegenie.ui.gutter.RouteLineMarkerProvider"/>
+        <projectService serviceImplementation="com.routegenie.ui.gutter.RouteGutterIndex"/>
+        <applicationService serviceImplementation="com.routegenie.settings.RouteGenieSettings"/>
+        <applicationConfigurable parentId="tools" id="RouteGenie.Settings"
+                                 instance="com.routegenie.settings.RouteGenieConfigurable"
+                                 bundle="messages.Branding" key="settings.displayName"/>
         <notificationGroup id="RouteGenie.Notifications" displayType="BALLOON"
                            bundle="messages.Branding" key="notification.group"/>
     </extensions>
@@ -44,6 +51,11 @@
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift R"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        <action id="RouteGenie.SelectInWindow" class="com.routegenie.ui.actions.SelectInRouteGenieAction"
+                icon="/icons/routeGenie.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="GoToMenu" anchor="last"/>
         </action>
     </actions>
 </idea-plugin>

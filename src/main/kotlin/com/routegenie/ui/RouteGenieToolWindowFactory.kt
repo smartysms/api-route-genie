@@ -12,7 +12,7 @@ import com.intellij.ui.content.ContentFactory
  */
 class RouteGenieToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val owner = RouteGenieWindowContent(toolWindow.disposable)
+        val owner = RouteGenieWindowContent(project, toolWindow.disposable)
         val content = ContentFactory.getInstance().createContent(owner.component, "", false)
         content.setDisposer(owner)
         toolWindow.contentManager.addContent(content)

@@ -7,7 +7,7 @@ import java.io.File
 
 /** The pure layers must stay free of the IDE and Swing, so their tests run in milliseconds without a platform. */
 class LayeringTest {
-    private val pureLayers = listOf("model", "client", "openapi")
+    private val pureLayers = listOf("model", "client", "openapi", "ui/model")
     private val forbidden = listOf("com.intellij", "com.jetbrains", "java.awt", "javax.swing")
 
     @Test

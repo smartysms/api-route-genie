@@ -26,6 +26,24 @@ object Limits {
     /** Creating the tool window content. */
     const val BUDGET_WINDOW_OPEN_MS = 100L
 
+    /** Sorted index plus grouped tree for 50,000 endpoints, off the UI thread (research 06 Q5: sort 40-90 ms, group 40-65 ms). */
+    const val BUDGET_MODEL_BUILD_50K_MS = 500L
+
+    /** Row height of the endpoint tree in unscaled pixels; fixed so the tree never measures rows (large-model mode). */
+    const val TREE_ROW_HEIGHT = 22
+
+    /** A tree with at most this many endpoints opens fully expanded; bigger ones start collapsed. */
+    const val AUTO_EXPAND_MAX_ENDPOINTS = 500
+
+    /** Most rows "expand all" and expansion restore will open, so a 50,000-row tree cannot be expanded by accident. */
+    const val MAX_EXPANDED_ROWS = 4_000
+
+    /** Initial share of the window height taken by the list when the user has not dragged the divider yet. */
+    const val DETAILS_SPLIT_PROPORTION = 0.62f
+
+    /** How long "updating" is shown in the status line after the window opens on a stale result. */
+    const val UPDATING_HINT_MS = 3_000L
+
     // --- Memory and size caps ---------------------------------------------------------------------------------------
 
     /**
@@ -83,4 +101,9 @@ object Limits {
 
     /** Quiet period after the last edit before discovery runs again; further edits inside it restart the wait. */
     const val REFRESH_DEBOUNCE_MS = 300L
+
+    // --- Gutter icons -------------------------------------------------------------------------------------------------
+
+    /** Endpoints offered in the chooser when several are declared on one line; the rest is not listed. */
+    const val GUTTER_MAX_CHOICES = 20
 }

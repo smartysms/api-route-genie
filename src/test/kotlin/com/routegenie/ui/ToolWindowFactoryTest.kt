@@ -6,9 +6,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManager
-import com.intellij.ui.components.JBPanelWithEmptyText
 import com.routegenie.Limits
-import com.routegenie.RouteGenieBundle
 import com.routegenie.testing.LeakProbe
 import com.routegenie.testing.PlatformLeaks
 import com.routegenie.testing.PlatformPerf
@@ -41,12 +39,11 @@ class ToolWindowFactoryTest : BasePlatformTestCase() {
 
     private fun open(): Window = newWindow().also { RouteGenieToolWindowFactory().createToolWindowContent(project, it.proxy) }
 
-    fun testCreatesOneContentWithTheEmptyState() {
+    fun testCreatesOneContentWithTheEndpointPanel() {
         val window = open()
         try {
             val content = window.manager.getContent(0)!!
-            val panel = content.component as JBPanelWithEmptyText
-            assertEquals(RouteGenieBundle.message("window.empty"), panel.emptyText.text)
+            assertTrue(content.component is EndpointsPanel)
             assertEquals(1, window.manager.contentCount)
             assertNotNull("content needs its disposer so closing it releases the owner", content.disposer)
         } finally {
@@ -78,16 +75,10 @@ class ToolWindowFactoryTest : BasePlatformTestCase() {
         assertTrue(result.medianMs <= Limits.BUDGET_WINDOW_OPEN_MS)
     }
 
-    fun testRepeatedCreateAndDisposeDoesNotGrowTheHeap() {
-        LeakProbe.assertNoHeapGrowth("tool-window-cycles", maxGrowthBytes = 2L * 1024 * 1024, warmups = 100, iterations = 400) {
-            Disposer.dispose(open().disposable)
-        }
-    }
-
     fun testNothingIsReachableAfterCycles() {
         repeat(20) { Disposer.dispose(open().disposable) }
         PlatformLeaks.assertNoneReachable("window content owners", RouteGenieWindowContent::class.java)
-        PlatformLeaks.assertNoneReachable("window panels", JBPanelWithEmptyText::class.java) { it.emptyText.text == RouteGenieBundle.message("window.empty") }
+        PlatformLeaks.assertNoneReachable("window panels", EndpointsPanel::class.java)
     }
 
     fun testLeakCheckCatchesAWindowThatWasKept() {

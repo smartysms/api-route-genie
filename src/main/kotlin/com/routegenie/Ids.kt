@@ -8,15 +8,23 @@ object Ids {
     const val TOOL_WINDOW = "RouteGenie"
     const val NOTIFICATION_GROUP = "RouteGenie.Notifications"
     const val ACTION_OPEN_WINDOW = "RouteGenie.OpenWindow"
+    const val ACTION_SELECT_IN_WINDOW = "RouteGenie.SelectInWindow"
+
+    /** Settings page (Settings | Tools). */
+    const val CONFIGURABLE = "RouteGenie.Settings"
+
+    /** Plugin id of the paid Python plugin; read to decide defaults, never a dependency. */
+    const val PAID_PYTHON_PLUGIN = "Pythonid"
 
     /** Extension point (qualified name) through which route providers are contributed. */
     const val EP_ROUTE_PROVIDER = "com.routegenie.routeProvider"
 
     val TOOL_WINDOWS = setOf(TOOL_WINDOW)
     val NOTIFICATION_GROUPS = setOf(NOTIFICATION_GROUP)
-    val ACTIONS = setOf(ACTION_OPEN_WINDOW)
+    val ACTIONS = setOf(ACTION_OPEN_WINDOW, ACTION_SELECT_IN_WINDOW)
+    val CONFIGURABLES = setOf(CONFIGURABLE)
     val EXTENSION_POINTS = setOf(EP_ROUTE_PROVIDER)
 
     /** Everything above in one set, for the "no id is typed twice" check. */
-    val ALL: Set<String> = TOOL_WINDOWS + NOTIFICATION_GROUPS + ACTIONS + EXTENSION_POINTS
+    val ALL: Set<String> = TOOL_WINDOWS + NOTIFICATION_GROUPS + ACTIONS + EXTENSION_POINTS + CONFIGURABLES
 }
