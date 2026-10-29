@@ -1,11 +1,19 @@
 name: Release
 
+# Every push to main that changes the plugin publishes a new version. The IDE reads updatePlugins.xml from the latest
+# release, so a plugin repository entry added once (see the README) turns each push into an ordinary plugin update.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["src/**", "build.gradle.kts", "gradle.properties", "gradle/**"]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -17,9 +25,36 @@ jobs:
           distribution: temurin
           java-version: 25
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build and test
-        run: ./gradlew build --console=plain
-      - name: Create GitHub release with the plugin zip
+      - name: Compute the version
+        id: v
+        run: |
+          base=$(grep '^version=' gradle.properties | cut -d= -f2 | cut -d. -f1,2)
+          echo "version=${base}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+      - name: Build the plugin zip
+        run: ./gradlew buildPlugin -Pversion=${{ steps.v.outputs.version }} --console=plain
+      - name: Write updatePlugins.xml
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          zip=$(ls build/distributions/*.zip)
+          id=$(grep -o '<id>[^<]*</id>' src/main/resources/META-INF/plugin.xml | sed 's/<[^>]*>//g')
+          name=$(grep '^productName=' gradle.properties | cut -d= -f2)
+          since=$(grep '^sinceBuild=' gradle.properties | cut -d= -f2)
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/$(basename "$zip")"
+          cat > updatePlugins.xml <<XML
+          <plugins>
+            <plugin id="${id}" url="${url}" version="${VERSION}">
+              <idea-version since-build="${since}"/>
+              <name>${name}</name>
+              <description>Lists the web endpoints of a Python project and lets you call them.</description>
+            </plugin>
+          </plugins>
+          XML
+          cat updatePlugins.xml
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" build/distributions/*.zip --title "$GITHUB_REF_NAME" --generate-notes
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" build/distributions/*.zip updatePlugins.xml \
+            --title "v${VERSION}" --notes "Automatic build of ${GITHUB_SHA}." --latest

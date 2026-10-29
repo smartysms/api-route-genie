@@ -7,8 +7,8 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
+// The version comes from gradle.properties (or -Pversion=... in the release workflow).
 group = "com.routegenie"
-version = "0.1.0"
 
 repositories {
     mavenCentral()
@@ -88,7 +88,7 @@ intellijPlatform {
             url = "https://github.com/${branding.getValue("repoSlug")}"
         }
         ideaVersion {
-            sinceBuild = "262"
+            sinceBuild = providers.gradleProperty("sinceBuild")
             // Explicit null: without it the plugin would default to "262.*".
             untilBuild = provider { null }
         }

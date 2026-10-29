@@ -20,6 +20,29 @@ discovery, the window, the HTTP client and request validation are being built ph
 
 - PyCharm 2026.2 (build 262) or newer. The plugin depends only on the bundled Python plugin (`PythonCore`).
 
+## Install and update
+
+Build the zip (`./gradlew buildPlugin`, result in `build/distributions/`) and install it with Settings | Plugins | gear |
+Install Plugin from Disk..., then restart the IDE. To update, build again and install the new zip the same way; the IDE
+replaces the old version at the next start.
+
+For a development loop, `scripts/install-local.sh` builds and copies the plugin into an IDE's user plugin folder
+(`ROUTEGENIE_PLUGINS_DIR=<IDE config dir>/plugins`). Close the IDE first when updating, because a running IDE usually
+keeps the plugin jar open on Windows.
+
+### Automatic updates from GitHub
+
+Every push to `main` that changes the plugin builds a new version (`<major.minor>.<run number>`, the base is `version` in
+`gradle.properties`) and publishes it as a GitHub release with the zip and an `updatePlugins.xml`. Add that file as a plugin
+repository once, and the IDE offers each new version as an ordinary plugin update:
+
+1. Settings | Plugins | gear icon | Manage Plugin Repositories... | `+`
+2. Enter `https://github.com/smartysms/api-route-genie/releases/latest/download/updatePlugins.xml`
+3. Install the plugin from the Marketplace tab or via Install Plugin from Disk the first time; from then on, updates appear
+   under Settings | Plugins | Installed (and in the IDE's update notification). Updating asks for an IDE restart.
+
+The IDE never installs plugin updates silently, so each update needs one click and a restart.
+
 ## Development
 
 Gradle wrapper 9.8.2, IntelliJ Platform Gradle Plugin 2.19.0, Kotlin 2.3.21. The platform jars are Java 25 class files, so
