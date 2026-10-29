@@ -1,0 +1,268 @@
+# Benchmarks: the real providers on real repositories
+
+Measured on 2026-10-30 with `src/test/kotlin/com/routegenie/bench/CorpusBenchmarkTest.kt` (opt-in, see Method) against commit
+`4344224`. Everything below was produced by the shipped providers and the shipped `RouteDiscoveryEngine`; the only additions
+are timers in test code (`TimedProvider`). The repositories were read, never executed.
+
+## Method
+
+- Corpora: shallow clones of full-stack-fastapi-template, fastapi, flask, superset, django, netbox, django-rest-framework,
+  sentry. Each is added as a content root of the light platform test project (nothing is copied). Web front end folders
+  (any sub-folder with a `package.json`) are excluded, as a Python IDE user would have them. `src`, `backend` and `netbox`
+  are marked as source roots for flask, sentry, full-stack-fastapi-template and netbox (their Python packages live there).
+- Enable with `ROUTEGENIE_CORPUS=<dir with the clones>`. Run from the Gradle lock script with a larger test heap
+  (`maxHeapSize = 4g` through an init script; the default 512 MB is too small for Sentry). Results: `build/reports/routegenie/bench/`
+  (`<repo>.txt`, `<repo>-endpoints.tsv`, `<repo>-diagnostics.tsv`, `<repo>-candidates.tsv`).
+- Per repository, in one JVM, sequentially: cold discovery (`engine.refreshNow()` with an empty cache, the same call the
+  tool window triggers; the test thread keeps pumping the UI event queue and records the longest gap), 5 warm runs (median),
+  10 edit cycles on the non-test file with the most endpoints (append a probe route, refresh, revert, refresh), 10 end to end
+  cycles through the engine's own listeners and debounce (an active engine, a real document edit, wait for the snapshot),
+  the same with a 50 ms debounce, 50 edit cycles for heap growth, 10 add and 10 delete cycles of a `.py` file in a second
+  content root.
+- Heap numbers are used heap after three `System.gc()` calls. They include the platform test fixture (about 115 to 130 MB
+  before anything is loaded), so the retained cost of discovery is the difference to `heap_baseline_mb`. Peak heap is sampled
+  every 20 ms and is a lower bound.
+- Timers (per provider, summed over threads, so they can exceed wall time): candidate lookup, `PsiFile.node` (syntax tree
+  built on demand by the timer; the product only builds it when it needs it), extraction, `missingModules`,
+  `findModuleFile`, `extractDependency`, link. Publish is not timed separately: it compares and stores a list.
+
+## Machine and conditions
+
+AMD Ryzen 7 1700 (8 cores, 16 threads), 15.9 GB RAM, SSD, Windows 10 Pro 19045, JBR OpenJDK 25.0.4, test JVM `-Xmx4g`,
+PyCharm 2023.2.6 libraries (platform 262.x APIs). Other agents were building on the same machine during the first runs.
+The numbers in the table come from a run started after three consecutive 6 second windows in which no other `java.exe`
+used more than 1 CPU second (only an idle Gradle daemon and an idle IDE were alive; CPU load 29 percent from other
+programs). Three complete runs exist; cold times of the small repos differ by up to 2x between runs (django-rest-framework
+cold: 0.95, 1.88, 1.69, 1.54 s over four runs; fastapi 1.75, 2.52, 3.26, 2.43 s), so treat cold times under 5 s as
+plus or minus 50 percent. Sentry cold was 17.0, 17.7, 18.0, 17.8 s over the four runs.
+
+## Results
+
+Cold = first published snapshot. Files per second = all `.py` files of the repository (not only candidates) divided by cold.
+Refresh = `refreshNow()` after one edit of one real route file (reparse and relink, no debounce). E2E = real edit to updated
+snapshot with the shipped 300 ms debounce, and with a 50 ms debounce.
+
+| repo | py files | cold ms | files/s | warm ms | endpoints | diagnostics | refresh ms | e2e 300 / 50 ms debounce | add file e2e ms | heap after cold MB (baseline) | peak MB |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| full-stack-fastapi-template | 43 | 172 | 250 | 9 | 0 | 23 | not measured (no endpoint) | not measured | 618 | 125 (115) | 135 |
+| fastapi | 1,219 | 2,427 | 502 | 74 | 1,471 | 47 | 118 | 717 / 205 | 722 | 125 (131) | 383 |
+| flask | 83 | 221 | 376 | 9 | 115 | 222 | 23 | 625 / 124 | 624 | 122 | 172 |
+| superset | 3,069 | 4,008 | 766 | 30 | 11 | 113 | 55 | 677 / 169 | 742 | 127 | 394 |
+| django | 2,937 | 2,183 | 1,345 | 50 | 740 | 359 | 53 | 655 / 152 | 1,041 | 131 | 407 |
+| netbox | 1,293 | 739 | 1,749 | 16 | 0 | 1 | not measured (no endpoint) | not measured | 682 | 129 | 315 |
+| django-rest-framework | 155 | 1,535 | 101 | 60 | 139 | 38 | 81 | 669 / 170 | 634 | 116 | 223 |
+| sentry | 8,422 | 17,829 | 472 | 225 | 0 | 0 | not measured (no endpoint) | not measured | 5,945 | 146 (131) | 598 |
+
+Budgets from CONVENTIONS section 4: cold discovery of about 600 files in 5 s is a rate of 120 files/s. Every repo is above
+that rate (101 files/s only for django-rest-framework, whose cold time is dominated by first-use class loading; Sentry runs
+at 472 files/s, so 8,422 files take 17.8 s). Re-reading one edited file and relinking has a 50 ms budget: the refresh column is
+23 to 118 ms, of which the edited file's own extraction is 0.5 to 2.6 ms and its link 2 to 26 ms; the rest is candidate lookup
+and stamp checks over all candidates (fastapi 639 + 606 + 1, django 326 + 35 + 63), so only flask (23 ms) and django (53 ms,
+borderline) are near the budget and fastapi (118 ms), superset (55 ms) and django-rest-framework (81 ms) exceed it.
+Filter keystroke time and tool window creation time were not measured here.
+
+Retention (`heap_before_50_edits` to `heap_after_50_edits`, 100 reparses and relinks of one file): growth of 0.4 to 4.5 MB
+(fastapi 4.1, flask 1.7, superset 4.5, django 1.5, django-rest-framework 2.9), cache entry count unchanged
+(`cache_entries_after_edits` equals `cache_entries`), endpoints after the edits restored to the original set in all repos
+where an edit was run. The growth is within what a JVM leaves uncollected after three GC calls; no per-edit leak shows up.
+After `Disposer.dispose` the engine was weakly collectable in all 8 runs. Engine providers ran 0 times on the UI thread.
+Longest gap between UI event pumps during a cold run: 0 to 13 ms for all repos except Sentry and Superset (60 ms),
+so no long UI stall; cold work is off the UI thread.
+
+Add and delete of a file in a project: 618 to 742 ms for all repos except django (about 1.0 s) and Sentry (5.9 s add,
+6.2 s delete). The pass starts about 600 ms after the file event (see bug 3) and then takes 10 to 130 ms, except django
+(about 440 ms) and Sentry (about 5.3 to 6.1 s), see bug 2.
+
+### Counts by framework and method
+
+| repo | by framework | by method | diagnostics by code |
+|---|---|---|---|
+| full-stack-fastapi-template | none | none | DYNAMIC_PREFIX 23 |
+| fastapi | FASTAPI 1470, FLASK 1 | GET 1030, POST 389, PUT 39, DELETE 6, PATCH 4, HEAD 1, OPTIONS 1, TRACE 1 | UNATTACHED_ROUTER 17, DYNAMIC_VALUE 12, UNRESOLVED_RECEIVER 11, UNRESOLVED_INCLUDE 6, DYNAMIC_PREFIX 1 |
+| flask | FLASK 115 | GET 101, POST 14 | UNRESOLVED_RECEIVER 202, UNRESOLVED_VIEW 14, UNATTACHED_ROUTER 3, DYNAMIC_PREFIX 2, UNRESOLVED_INCLUDE 1 |
+| superset | FLASK 11 | GET 10, PUT 1 | UNRESOLVED_RECEIVER 108, UNATTACHED_ROUTER 4, UNRESOLVED_INCLUDE 1 |
+| django | DJANGO 740 | ANY 409, GET 159, POST 46, PUT 38, DELETE 28, HEAD 20, OPTIONS 20, PATCH 20 | GUESSED_ROOT 112, UNRESOLVED_VIEW 152, UNSUPPORTED_REGEX 64, DYNAMIC_VALUE 27, DYNAMIC_PREFIX 3, UNRESOLVED_INCLUDE 1 |
+| netbox | none | none | DYNAMIC_PREFIX 1 |
+| django-rest-framework | DRF 128, DJANGO 11 | GET 78, POST 25, PUT 11, ANY 11, DELETE 6, PATCH 5, OPTIONS 3 | GUESSED_ROOT 20, UNRESOLVED_VIEW 16, UNSUPPORTED_REGEX 2 |
+| sentry | none | none | none (see bug 1) |
+
+Invariants checked on every snapshot (path starts with `/`, no `{?}`, not partial): 0 violations in all repos.
+No `INTERNAL_ERROR`, no timeout, no crash, no cancelled pass, no `NO_REACTION`, no added file that was not found and no
+deleted file that stayed listed in any run.
+
+## Where the time goes (Sentry, 8,422 files, cold 17.8 s)
+
+Summed thread time per provider (Django, FastAPI, Flask providers run one after the other; extraction uses 2 threads):
+
+| step | django provider | fastapi provider | flask provider |
+|---|---|---|---|
+| candidate lookup (word index, stub index) | 13 ms (493 files) | 26 ms (959) | 24 ms (920) |
+| extraction incl. syntax tree (`extract`) | 691 ms (281 with facts) | 9,006 ms (345 with facts) | 7,328 ms (676 with facts) |
+| of which forced syntax tree build | 694 ms | 1,278 ms | 322 ms |
+| `findModuleFile` (module name to file), calls | 4,649 ms (1,808) | 195 ms (72) | 597 ms (278) |
+| `extractDependency`, calls | 2,907 ms (852) | 179 ms (28) | 916 ms (191) |
+| `missingModules` | 167 ms | 18 ms | 49 ms |
+| link | 7 ms | 17 ms | 14 ms |
+
+Reading: extraction by the FastAPI and Flask providers is about 16 s of thread time, about 8 s of wall time on 2 threads and
+about half the cold time. Candidate lookup (66 ms) and link (38 ms) are negligible. About 5.4 s is `findModuleFile`, which runs
+serially inside the provider loop; this is a defect (bug 2), not cost of the work. The FastAPI and Flask providers read nearly
+the same files (959 and 920 candidates, 345 and 676 with facts, 614 and 244 rejected after the text prefilter) and each
+walks them separately. Retained heap after cold is 15 MB over the baseline for 3,443 cached entries; sampled peak 598 MB.
+
+Other repos follow the same shape with smaller numbers; the only other place where a lookup cost shows is django
+(`findModuleFile` 98 ms for 95 calls, 109 ms again after a file is added).
+
+## Endpoint counts against the ground truth (STATS.md)
+
+STATS.md counts route declaration lines with greps; matches inside docstrings and comments are included, and nothing about
+mounts or prefixes is resolved. Line level comparison: for each grep line, was an endpoint reported at that file and line,
+or was a diagnostic reported there, or is it a docstring.
+
+| repo | ground truth lines | endpoints | recall estimate | what the rest is |
+|---|---|---|---|---|
+| full-stack-fastapi-template | 23 decorators (23 non-test) | 0 | 0 of 23 | all 23 omitted with DYNAMIC_PREFIX: `include_router(api_router, prefix=settings.API_V1_STR)` where `API_V1_STR` is a pydantic `BaseSettings` attribute (can be overridden by the environment, so correctly not guessed) |
+| fastapi | 1,789 decorator lines (494 non-test) | 1,471 | 99 percent of real routes; 80 percent of lines | 313 lines are identical routes of different function-local apps that collapsed (bug 4), 35 are docstring examples, 11 omitted with a diagnostic (UNATTACHED_ROUTER 14 incl. callbacks, DYNAMIC_VALUE), 1 real unsupported (`APIRouter.route`) |
+| flask | 312 `@x.route` lines (28 non-test) | 115 | about 61 percent of lines; 100 percent of production and example code | 84 collapsed duplicates (bug 4), 123 omitted with a diagnostic (202 UNRESOLVED_RECEIVER: the receiver is a pytest fixture parameter), 7 docstrings |
+| superset | 17 `.route` + 328 `@expose` | 11 (all in unit tests) | 0 of about 332 production routes | Flask-AppBuilder `@expose` is not supported and gives no diagnostic; the 4 `health_blueprint` routes are omitted with UNATTACHED_ROUTER because the blueprint is registered through an unresolved variable |
+| django | 898 `path/re_path/url` lines (42 non-test) | 740 | 62 percent of lines | 200 omitted with a diagnostic, 141 silent (admin `get_urls()` methods, urlconfs that only include each other, function-local lists) |
+| django-rest-framework | 149 path lines, 25 `router.register` | 139 | 38 percent of path lines, about all registered viewsets | 12 with a diagnostic, 81 silent: test urlpatterns built inside test methods, docstrings |
+| netbox | 395 `path`, 147 `router.register`, 1,205 `@register_model_view` | 0 | 0 | the root is `path(settings.BASE_PATH, include(_patterns))`, `BASE_PATH` is computed from the environment: 1 DYNAMIC_PREFIX diagnostic, everything below is correctly not listed; `register_model_view` is also unsupported |
+| sentry | 1,030 path lines (998 non-test), 607 endpoint classes | 0 | 0 | bug 1: silent |
+
+## Precision: 15 random endpoints per repo, checked against the source
+
+Method: `shuf` with a fixed seed over the `*-endpoints.tsv`, then read the decorator or `path()` line, the router or
+blueprint declaration, and each `include`/`register` that adds a prefix.
+
+| repo | checked | wrong | notes |
+|---|---|---|---|
+| fastapi | 14 random + a complete audit of the 42 endpoints of `test_include_router_defaults_overrides.py` (a 400 KB file with three levels of `include_router` with and without prefix) and of the 4 `sub_applications`/`wsgi` endpoints | 1 (the `wsgi` one, bug 5) | every prefix composition of the 42 matched the include tree (`/level1/level2/level3/level4/override5` and so on) |
+| flask | 13 random + all `test_blueprints` nested, renamed and double-registered blueprints (`/1/foo`, `/2/foo`, `/parent/child/grandchild/`, `/a/a/`) | 0 | `defaults=` and `url_prefix=` at registration are applied |
+| superset | all 11 | 0 | `add_url_rule` with `methods=["GET"]` and `@app.route(..., methods=["PUT"])` read correctly |
+| django | 13 random | 0 wrong paths; 2 debatable | `path("test_admin/admin/", site.urls)` is listed as `ANY /test_admin/admin/` with handler `site.urls` (bug 6) |
+| django-rest-framework | 15 random + 12 router/viewset routes | 0 | method sets of `APIView` classes match the defined `get/post/put` methods; `path('html_new_model_viewset', include(router.urls))` yields `/html_new_model_viewset{pk}/` with no slash, which is exactly what Django builds; `@action(url_path=...)` routes correct |
+| full-stack-fastapi-template, netbox, sentry | 0 endpoints | none | vacuous |
+
+Sum: about 80 checked, 0 invented and 1 wrong path (bug 5), 2 debatable (bug 6). The target is zero, so this does not pass
+until bug 5 is fixed; bug 6 should be decided.
+
+## Fifteen real routes that were not reported, and why
+
+1. full-stack-fastapi-template `backend/app/api/routes/items.py`, `@router.get("/")` under `APIRouter(prefix="/items")`
+   included with `prefix=settings.API_V1_STR` in `app/main.py`: DYNAMIC_PREFIX (correct per correct-or-absent; an instance
+   attribute of a `BaseSettings` object).
+2. Same for `users.py` (all methods), `login.py` (5 routes), `utils.py`, `private.py`: 23 in total, one diagnostic per route
+   (23 diagnostics where 1 would say it).
+3. superset `superset/dashboards/api.py` `@expose("/", methods=("GET",))` (34 in this file, 328 in the repo): unsupported
+   Flask-AppBuilder pattern, no diagnostic.
+4. superset `superset/views/health.py:26` `@health_blueprint.route("/health")` (also `/healthcheck`, `/ping`, `/version`):
+   UNATTACHED_ROUTER; the blueprint is registered with a variable in `superset/initialization/__init__.py` (correct).
+5. netbox `netbox/netbox/urls.py:93` `path(settings.BASE_PATH, include(_patterns))` and with it every route in `dcim/urls.py`,
+   `ipam/urls.py` and so on: DYNAMIC_PREFIX (correct).
+6. netbox `@register_model_view` (1,205): unsupported dynamic registration, no diagnostic.
+7. sentry `src/sentry/web/urls.py:71` `urlpatterns: list[...] = [...]` and the whole `api/urls.py` tree: bug 1 (bug).
+8. flask `tests/test_appctx.py:12` `@app.route("/")`: UNRESOLVED_RECEIVER, `app` is a pytest fixture parameter (correct).
+9. flask `tests/test_blueprints.py:122` `Blueprint("test", __name__, url_prefix=prefix)` with a parametrized `prefix`:
+   DYNAMIC_PREFIX (correct).
+10. fastapi `tests/test_include_route.py:9` `@router.route("/items/")` on an `APIRouter` (Starlette style): not supported, no
+    diagnostic (limitation).
+11. fastapi `docs_src/openapi_callbacks/tutorial001_py310.py:26` callback router never included: UNATTACHED_ROUTER (correct;
+    callback routes are not served by the app).
+12. fastapi `tests/test_path_alias_choices.py:91` `@app.get("/{" + alias + "}")` computed path: DYNAMIC_VALUE (correct).
+13. fastapi `tests/.../test_nullable_and_defaults.py:60` and 46 more `@app.post("/parameter")` in other test functions:
+    reported once, the others collapsed (bug 4).
+14. django `django/contrib/admin/sites.py` `path("", wrap(self.index))` inside `get_urls()` (11 lines) and
+    `tests/urlpatterns_reverse/namespace_urls.py` (two modules that include each other, so neither is a root): silent.
+15. django-rest-framework `tests/test_urlpatterns.py` and `tests/test_versioning.py`: `urlpatterns` assigned inside test
+    methods: silent (function-local lists are not followed).
+
+## Recall of the narrowed candidate rules
+
+For each repository: files that contain a route decorator, `add_url_rule`, `include_router`, `register_blueprint`,
+`urlpatterns`, `path(`, `.register(`, `@api_view`, `@action(` or `ROOT_URLCONF` (grep, excluding migrations, venvs, build
+output), minus the union of the candidates of the three providers.
+
+| repo | such files | candidates (union of 3 providers) | such files that were not candidates |
+|---|---|---|---|
+| full-stack-fastapi-template | 7 | 7 | 0 |
+| fastapi | 629 | 640 | 7: all docstring examples (`fastapi/security/*.py`, `background.py`, ...) |
+| flask | 39 | 57 | 1: `src/flask/helpers.py` (docstring) |
+| superset | 41 | 284 | 4: `@action` of Flask-AppBuilder and a `.register()` in a worker (not routes) |
+| django | 307 | 370 | 8: docstrings and `admin/options.py`/`actions.py` (methods, unsupported anyway) |
+| netbox | 38 | 62 | 6: `@action` methods in API view modules (they are pulled in by the dependency rounds when needed) |
+| django-rest-framework | 39 | 43 | 6: docstrings, `@api_view` functions in test modules that no urlconf uses |
+| sentry | 618 | 1,480 | 4: `*_urlpatterns` modules (`auth_v2`, `notifications/platform`, `preprod`, `workflow_engine`), reached as dependencies of `api/urls.py` |
+
+No file that actually serves a route in these corpora was missed by the narrowed rules. The price of the rules is breadth
+rather than misses: on Sentry 1,480 candidates (18 percent of the files) are read, of which the FastAPI provider extracts facts
+from 345 of 959 and the Flask provider from 676 of 920.
+
+## Bugs and defects, by priority
+
+No crash, no hang, no timeout, no engine exception in any run (all 8 repos completed; the slowest pass was 18 s).
+
+1. **High, silent total miss: a `ROOT_URLCONF` module that only re-exports `urlpatterns` produces nothing and no
+   diagnostic.** Sentry (`sentry.conf.urls`: `from sentry.web.urls import handler500, urlpatterns`) lists 0 of about 1,000
+   routes. In `DjangoLinker.execute()` a root without its own `urlpatterns` list is skipped. Repro
+   (`BenchReproTest.testRootUrlconfThatReExportsUrlpatterns`): `proj/settings.py` `ROOT_URLCONF = 'proj.urls'`,
+   `proj/urls.py` `from app.urls import urlpatterns`, `app/urls.py` `urlpatterns = [path('a/', views.a)]` gives
+   `endpoints=[] diagnostics=[]`. Expected `ANY /a/`, or at least an UNRESOLVED_INCLUDE diagnostic. (The annotated form
+   `urlpatterns: list = [...]` followed by `urlpatterns += [...]` works: `testAnnotatedUrlpatternsWithAugmentedAssignment`.)
+2. **High, performance: `PyProviderSupport.findModuleFile` is linear in the number of `__init__.py` files per call.** It asks
+   `FilenameIndex` for every `__init__.py` (and every file with the module's name) and calls `path` on each (full path string
+   per file) for every dotted name. On Sentry: 1,808 lookups, 4.6 s of the 17.8 s cold run, and the same 4.6 s again after any
+   file is added, deleted or renamed because the layout version invalidates the lookup cache: add to published 5.3 to 6.7 s,
+   delete 6.2 s (stack dumps during the wait show the thread inside `findModuleFile` /
+   `VirtualFileSystemEntry.computePath`). It stays off the UI thread, so it is latency, not a freeze. Fix idea: resolve with
+   `VfsUtil.findRelativePath` / `findFileByRelativePath` from each source root and content root (a few path steps per
+   lookup), or build one map of package directories per layout version.
+3. **Medium: edit to updated snapshot takes about twice the debounce.** With the 300 ms debounce the end to end time is 625 to
+   717 ms for refreshes of 20 to 120 ms; with a 50 ms debounce it is 124 to 205 ms. The model "2 x debounce + refresh" fits
+   all repos. `debounceLoop` waits `delay(debounceMs)` and then waits again when any trigger arrived during that delay, so two
+   signals that arrive together (the PSI modification and the other listener) cost two full delays. Likely cause, not
+   otherwise verified. Fix: track the time of the last signal and wait for `debounce` since then.
+4. **Medium: identical routes in different scopes collapse into one endpoint, silently.** Two functions each define
+   `app = FastAPI()` and `@app.get('/x') def read()`: `BenchReproTest.testFunctionLocalAppsWithTheSameRoute` returns one
+   endpoint; with different handler names (`testFunctionLocalAppsWithDifferentHandlerNames`) it returns both. 313 FastAPI
+   and 84 Flask route lines in the corpora disappear this way (all in test files).
+5. **Medium, wrong path (violates zero invented): an app mounted into another framework is listed with its own path.**
+   fastapi `docs_src/wsgi/tutorial001_py310.py`: `app.mount("/v1", WSGIMiddleware(flask_app))` with
+   `@flask_app.route("/")`; discovery reports `GET /` (Flask), the served path is `/v1/`. Either apply the mount prefix or
+   omit the Flask route and add a diagnostic.
+6. **Low, debatable: an opaque include is listed as an endpoint.** `path("admin/", admin.site.urls)` gives
+   `ANY /admin/` with handler `site.urls` (`testAdminSiteUrlsMount`); the real site serves many routes under it and
+   `GET /admin/` is only one. Prefer a diagnostic over a made-up `ANY`.
+7. **Low, coverage cannot be measured where nothing is reported:** Flask-AppBuilder `@expose` (328 in Superset), NetBox
+   `@register_model_view`, Starlette `APIRouter.route`, function-local `urlpatterns`, mutually-including urlconfs, and
+   docstrings give no diagnostic.
+8. **Low, noise:** one DYNAMIC_PREFIX diagnostic per route when an include prefix is dynamic (23 for the 23 routes behind one
+   `include_router`); one per include would be enough. 202 UNRESOLVED_RECEIVER warnings in Flask are pytest fixtures.
+9. **Info:** the first repository of a run pays class loading and JIT (django-rest-framework: 101 files/s although it has
+   tiny files). Cold results under 2 s should not be compared across repos.
+
+## Recommendations
+
+1. Fix bug 1 first (Sentry-shaped projects show an empty window with no explanation), then bug 5 (zero invented).
+2. Fix bug 2 (module lookup) and bug 3 (debounce): cheap, and they dominate add/delete latency and the first 5 s on a big
+   project.
+3. Share one syntax tree walk between the FastAPI and Flask providers (and Django where it overlaps): on Sentry they walk
+   about 900 of the same files and extraction is half of cold time.
+4. Count diagnostics for unsupported patterns (`@expose`, `register_model_view`, `APIRouter.route`) so coverage is
+   visible, and merge per-route DYNAMIC_PREFIX into one per include.
+5. If cold start must stay under the 5 s budget for 8,000 files, the persistent store in ARCHITECTURE.md is the next lever;
+   the numbers say extraction (not candidates, not link) is what it would remove. After bug 2 the Sentry estimate is about
+   12 s cold, still above 5 s.
+6. Keep the harness: `ROUTEGENIE_CORPUS=<dir> scripts/gw.sh test --rerun --tests com.routegenie.bench.CorpusBenchmarkTest`
+   (needs the test heap raised to 4 GB for Sentry) and `BenchReproTest` (prints, asserts nothing).
+
+## Not measured or not done
+
+- One-file edit latency for full-stack-fastapi-template, netbox and Sentry (no endpoint to pick a route file from).
+- Peak heap is a 20 ms sample, not an exact maximum; retained heap is relative to a fixture baseline.
+- Filter keystroke time and tool window creation time (UI), and any run with a real Python SDK (the platform test project has
+  none; resolution of library imports was not exercised).
+- Precision is a sample of about 80 endpoints plus two complete audits; it is not a proof of zero wrong endpoints.
+  Recall against grep counts is line based and includes docstrings.
+- The first runs shared the machine with other builds; only the final table comes from a quiet machine, and variation
+  between runs for cold times of the small repos is large (see Machine).

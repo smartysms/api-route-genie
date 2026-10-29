@@ -56,6 +56,14 @@ object BenchSettings {
     const val ADDED_DIR = "bench_added"
     const val COLLECT_TIMEOUT_MS = 10_000L
 
+    /** Debounce of the second live engine: shows how much of the end to end latency is the debounce itself. */
+    const val SMALL_DEBOUNCE_MS = 50L
+
+    /** When an add-file pass is still running this long after the change, the stacks of the busy threads are printed once. */
+    const val STACK_DUMP_AFTER_MS = 2_500L
+    const val STACK_DUMP_FRAMES = 6
+    const val STACK_DUMP_EVERY_MS = 700L
+
     /** Source roots a developer would have (PyCharm marks `src` and similar); relative to the repo root. */
     val SOURCE_ROOTS = mapOf(
         "full-stack-fastapi-template" to listOf("backend"),
@@ -70,14 +78,24 @@ class TimedProvider(private val inner: RouteProvider, val stats: Stats) : RouteP
     class Stats {
         val candidatesNs = AtomicLong()
         val candidates = AtomicLong()
+        val parseNs = AtomicLong()
         val extractNs = AtomicLong()
         val extractCalls = AtomicLong()
         val extractFacts = AtomicLong()
         val linkNs = AtomicLong()
+        val missingNs = AtomicLong()
+        val missingCalls = AtomicLong()
+        val findModuleNs = AtomicLong()
+        val findModuleCalls = AtomicLong()
+        val depExtractNs = AtomicLong()
+        val depExtractCalls = AtomicLong()
         val edtCalls = AtomicLong()
         val edtTotal = AtomicLong()
         fun reset() {
-            listOf(candidatesNs, candidates, extractNs, extractCalls, extractFacts, linkNs, edtCalls).forEach { it.set(0) }
+            listOf(
+                candidatesNs, candidates, parseNs, extractNs, extractCalls, extractFacts, linkNs, edtCalls, missingNs, missingCalls,
+                findModuleNs, findModuleCalls, depExtractNs, depExtractCalls,
+            ).forEach { it.set(0) }
         }
     }
 
@@ -101,6 +119,10 @@ class TimedProvider(private val inner: RouteProvider, val stats: Stats) : RouteP
 
     override fun extract(file: PsiFile): SourceFacts? {
         noteThread()
+        // Building the syntax tree is forced first so that its cost is separate from walking it.
+        val tp = System.nanoTime()
+        file.node
+        stats.parseNs.addAndGet(System.nanoTime() - tp)
         val t = System.nanoTime()
         val r = inner.extract(file)
         stats.extractNs.addAndGet(System.nanoTime() - t)
@@ -109,11 +131,29 @@ class TimedProvider(private val inner: RouteProvider, val stats: Stats) : RouteP
         return r
     }
 
-    override fun extractDependency(file: PsiFile): SourceFacts? = inner.extractDependency(file)
+    override fun extractDependency(file: PsiFile): SourceFacts? {
+        val t = System.nanoTime()
+        val r = inner.extractDependency(file)
+        stats.depExtractNs.addAndGet(System.nanoTime() - t)
+        stats.depExtractCalls.incrementAndGet()
+        return r
+    }
 
-    override fun missingModules(facts: Collection<FileFacts>): Set<String> = inner.missingModules(facts)
+    override fun missingModules(facts: Collection<FileFacts>): Set<String> {
+        val t = System.nanoTime()
+        val r = inner.missingModules(facts)
+        stats.missingNs.addAndGet(System.nanoTime() - t)
+        stats.missingCalls.incrementAndGet()
+        return r
+    }
 
-    override fun findModuleFile(project: Project, module: String): VirtualFile? = inner.findModuleFile(project, module)
+    override fun findModuleFile(project: Project, module: String): VirtualFile? {
+        val t = System.nanoTime()
+        val r = inner.findModuleFile(project, module)
+        stats.findModuleNs.addAndGet(System.nanoTime() - t)
+        stats.findModuleCalls.incrementAndGet()
+        return r
+    }
 
     override fun link(facts: Collection<FileFacts>): LinkResult {
         noteThread()
@@ -279,6 +319,7 @@ class CorpusBenchmarkTest : PythonPlatformTestCase() {
         line("heap_peak_sampled_mb", heapPeak.get() / MB)
         phaseReport("cold")
         summarize(repo, snap, reportDir)
+        dumpCandidates(repo, reportDir, timed)
         val afterCold = LeakProbe.usedHeapBytes()
         line("heap_after_cold_mb", afterCold / MB)
         line("heap_retained_after_cold_mb", (afterCold - baseline) / MB)
@@ -346,8 +387,19 @@ class CorpusBenchmarkTest : PythonPlatformTestCase() {
             line(
                 "phase_${tag}_$id",
                 "candidates=${s.candidates.get()} candidates_ms=${ms(s.candidatesNs.get())} extract_calls=${s.extractCalls.get()} " +
-                    "extract_with_facts=${s.extractFacts.get()} extract_ms=${ms(s.extractNs.get())} link_ms=${ms(s.linkNs.get())}",
+                    "extract_with_facts=${s.extractFacts.get()} parse_ms=${ms(s.parseNs.get())} extract_ms=${ms(s.extractNs.get())} link_ms=${ms(s.linkNs.get())} missing_ms=${ms(s.missingNs.get())} missing_calls=${s.missingCalls.get()} " +
+                    "find_module_ms=${ms(s.findModuleNs.get())} find_module_calls=${s.findModuleCalls.get()} dep_extract_ms=${ms(s.depExtractNs.get())} dep_extract_calls=${s.depExtractCalls.get()}",
             )
+        }
+    }
+
+    /** Which files each provider offered as candidates, to compare with a grep of the files that really contain routes. */
+    private fun dumpCandidates(repo: String, reportDir: File, timed: List<TimedProvider>) {
+        File(reportDir, "$repo-candidates.tsv").bufferedWriter().use { w ->
+            for (p in timed) {
+                val files = com.intellij.openapi.application.runReadAction { p.findCandidates(project).toList() }
+                for (f in files) w.write("${p.id}\t${com.routegenie.discovery.ProjectPaths.relative(project, f)}\n")
+            }
         }
     }
 
@@ -471,6 +523,28 @@ class CorpusBenchmarkTest : PythonPlatformTestCase() {
         line("debounce_ms", Limits.REFRESH_DEBOUNCE_MS)
         Disposer.dispose(liveOwner)
 
+        val fastOwner = Disposer.newDisposable("engine live small debounce")
+        Disposer.register(owner, fastOwner)
+        val fast = RouteDiscoveryEngine(project, scope, fastOwner, { timed }, debounceMs = BenchSettings.SMALL_DEBOUNCE_MS, active = true)
+        fast.start(coldStart = false)
+        timedPumped("fast-prime") { fast.refreshNow() }
+        val e2eFast = ArrayList<Long>()
+        repeat(BenchSettings.EDIT_CYCLES_TIMED) {
+            val gen = fast.snapshot.value.generation
+            val runs = fast.runCount
+            val t = System.nanoTime()
+            edit(doc) { doc.insertString(doc.textLength, probeText(original, n++)) }
+            waitGeneration(fast, gen, runs)
+            e2eFast += System.nanoTime() - t
+            val gen2 = fast.snapshot.value.generation
+            val runs2 = fast.runCount
+            edit(doc) { doc.setText(original) }
+            waitGeneration(fast, gen2, runs2)
+        }
+        line("edit_e2e_ms_median_with_${BenchSettings.SMALL_DEBOUNCE_MS}ms_debounce", ms(median(e2eFast)))
+        line("edit_e2e_ms_all_small_debounce", e2eFast.joinToString(",") { ms(it) })
+        Disposer.dispose(fastOwner)
+
         val heapBefore = LeakProbe.usedHeapBytes()
         repeat(BenchSettings.EDIT_CYCLES_LEAK) {
             edit(doc) { doc.insertString(doc.textLength, probeText(original, n++)) }
@@ -516,6 +590,16 @@ class CorpusBenchmarkTest : PythonPlatformTestCase() {
         return true
     }
 
+    /** Prints where the threads that work for the engine are, to find time that the provider timers do not cover. */
+    private fun dumpBusyThreads() {
+        for ((thread, frames) in Thread.getAllStackTraces()) {
+            if (thread.state != Thread.State.RUNNABLE || frames.none { it.className.startsWith("com.routegenie") && !it.className.contains("bench") }) continue
+            println("BENCH_STACK thread=${thread.name} state=${thread.state}")
+            frames.take(BenchSettings.STACK_DUMP_FRAMES).forEach { println("BENCH_STACK    at $it") }
+            frames.filter { it.className.startsWith("com.routegenie") }.forEach { println("BENCH_STACK    ours $it") }
+        }
+    }
+
     private fun addDelete(timed: List<TimedProvider>) {
         val tmp = java.nio.file.Files.createTempDirectory("routegenie-bench-added").toFile()
         try {
@@ -550,6 +634,40 @@ class CorpusBenchmarkTest : PythonPlatformTestCase() {
                 delMs += System.nanoTime() - t2
                 if (live.snapshot.value.endpoints.any { it.path == "/added$i" }) line("DELETE_STILL_LISTED", i)
             }
+            resetStats()
+            val genP = live.snapshot.value.generation
+            var createdP: VirtualFile? = null
+            WriteCommandAction.runWriteCommandAction(project) {
+                val d = vf.findChild(BenchSettings.ADDED_DIR) ?: vf.createChildDirectory(this, BenchSettings.ADDED_DIR)
+                val f = d.createChildData(this, "added_profile.py")
+                VfsUtil.saveText(f, "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get(\"/added_profile\")\ndef added_profile():\n    return 1\n")
+                createdP = f
+            }
+            val tAdd = System.nanoTime()
+            val runsP = live.runCount
+            var passStartMs = -1.0
+            var dumbMs = 0L
+            var nextDump = BenchSettings.STACK_DUMP_AFTER_MS
+            val capP = System.currentTimeMillis() + BenchSettings.WAIT_CAP_MS
+            while (live.snapshot.value.generation == genP && System.currentTimeMillis() < capP) {
+                if (passStartMs < 0 && live.runCount > runsP) passStartMs = (System.nanoTime() - tAdd) / 1e6
+                if (com.intellij.openapi.project.DumbService.isDumb(project)) dumbMs++
+                if ((System.nanoTime() - tAdd) / 1_000_000 >= nextDump) {
+                    nextDump += BenchSettings.STACK_DUMP_EVERY_MS
+                    dumpBusyThreads()
+                }
+                PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                Thread.sleep(1)
+            }
+            line("add_file_pass_started_after_ms", String.format(Locale.ROOT, "%.0f", passStartMs))
+            line("add_file_published_after_ms", ms(System.nanoTime() - tAdd))
+            line("add_file_ms_in_dumb_mode_polls", dumbMs)
+            phaseReport("add_file")
+            resetStats()
+            val genD = live.snapshot.value.generation
+            WriteCommandAction.runWriteCommandAction(project) { createdP!!.delete(this) }
+            waitGeneration(live, genD)
+            phaseReport("delete_file")
             line("add_file_e2e_ms_median_incl_debounce", ms(median(addMs)))
             line("delete_file_e2e_ms_median_incl_debounce", ms(median(delMs)))
             line("add_file_ms_all", addMs.joinToString(",") { ms(it) })
