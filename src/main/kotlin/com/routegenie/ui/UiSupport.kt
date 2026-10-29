@@ -3,6 +3,7 @@ package com.routegenie.ui
 import com.intellij.openapi.actionSystem.DataKey
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.DumbAwareToggleAction
 import com.intellij.openapi.project.Project
@@ -42,14 +43,16 @@ internal object UiMetrics {
     const val GAP = 6
 }
 
-/** Resolves a project-relative source position and opens it. Runs on the UI thread, touches only the virtual file system. */
+/**
+ * Resolves a project-relative source position and opens it. Runs on the UI thread, where the platform no longer grants
+ * read access implicitly, so every read of the project model or of a document takes its own read action.
+ */
 object EndpointSourceNavigation {
-    fun resolve(project: Project, path: String): VirtualFile? {
-        project.guessProjectDir()?.findFileByRelativePath(path)?.takeIf { it.isValid }?.let { return it }
-        for (root in ProjectRootManager.getInstance(project).contentRoots) {
-            root.findFileByRelativePath(path)?.takeIf { it.isValid }?.let { return it }
-        }
-        return null
+    fun resolve(project: Project, path: String): VirtualFile? = runReadAction {
+        project.guessProjectDir()?.findFileByRelativePath(path)?.takeIf { it.isValid }
+            ?: ProjectRootManager.getInstance(project).contentRoots.firstNotNullOfOrNull { root ->
+                root.findFileByRelativePath(path)?.takeIf { it.isValid }
+            }
     }
 
     /** The file may have changed since the scan; a stale offset must never point past the end. */
@@ -63,7 +66,7 @@ object EndpointSourceNavigation {
                 .notify(project)
             return false
         }
-        val length = FileDocumentManager.getInstance().getDocument(file)?.textLength ?: file.length.toInt()
+        val length = runReadAction { FileDocumentManager.getInstance().getDocument(file)?.textLength ?: file.length.toInt() }
         OpenFileDescriptor(project, file, clampOffset(source.offset, length)).navigate(true)
         return true
     }
