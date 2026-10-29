@@ -30,6 +30,10 @@ internal object DjangoCatalog {
 
     const val ROUTER_URLS = "urls"
 
+    /** What the diagnostics for patterns that are counted but not followed say. */
+    const val NOTE_LOCAL_URLPATTERNS = "urlpatterns inside a function"
+    const val NOTE_UNREACHED_URLCONF = "urlconf that no root reaches"
+
     /** `admin.site.urls` is opaque: it is listed as one mount point, never expanded. */
     const val ADMIN_SITE_URLS_SUFFIX = "site.urls"
 

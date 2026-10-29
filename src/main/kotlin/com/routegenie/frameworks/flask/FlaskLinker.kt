@@ -54,8 +54,10 @@ internal object FlaskLinker {
         var hasIncoming = false
     }
 
-    /** [blocker] is why nothing below this point can be listed. */
-    private class State(val prefix: StrValue?, val names: String, val blocker: DiagnosticCode?)
+    /** Why nothing below can be listed; a [source] means it was reported once at that include, not per route. */
+    private class Blocker(val code: DiagnosticCode, val source: SourceRef? = null)
+
+    private class State(val prefix: StrValue?, val names: String, val blocker: Blocker?)
 
     private enum class ViewKind { METHOD_VIEW, VIEW, UNKNOWN }
 
@@ -100,10 +102,18 @@ internal object FlaskLinker {
                 }
             }
             for (c in file.calls) {
-                val primitive = table.methodPrimitive(c.method, PrimitiveKind.ROUTE_CALL, PrimitiveKind.ATTACH) ?: continue
+                val primitive = table.methodPrimitive(c.method, PrimitiveKind.ROUTE_CALL, PrimitiveKind.ATTACH, PrimitiveKind.MOUNT) ?: continue
                 declared += c.pos.offset to {
                     val source = LinkSupport.sourceOf(file, c.pos)
-                    if (primitive.kind == PrimitiveKind.ROUTE_CALL) {
+                    if (primitive.kind == PrimitiveKind.MOUNT) {
+                        // A Flask app handed to `mount` (usually inside WSGIMiddleware) is served under the mount path.
+                        for (ref in LinkSupport.wrappedRefs(primitive.child?.of(c.call))) {
+                            nodeOf(file, c.scope, ref)?.takeIf { it.isApp }?.let { wrapped ->
+                                wrapped.hasIncoming = true
+                                diagnostics += LinkSupport.diagnostic(DiagnosticCode.MOUNTED_APP, source)
+                            }
+                        }
+                    } else if (primitive.kind == PrimitiveKind.ROUTE_CALL) {
                         val routes = routesOfCall(file, index, primitive, c.scope, c.call, c.pos, diagnostics)
                         val node = nodeOf(file, c.scope, c.receiver)
                         if (node != null) node.routes += routes else if (table.importsFramework(file)) orphans += routes
@@ -131,7 +141,7 @@ internal object FlaskLinker {
 
         for (node in nodes.values) {
             if (node.hasIncoming) continue
-            val state = if (node.isApp) State(null, "", null) else State(node.urlPrefix, nameOf(node.name, null, ""), DiagnosticCode.UNATTACHED_ROUTER)
+            val state = if (node.isApp) State(null, "", null) else State(node.urlPrefix, nameOf(node.name, null, ""), Blocker(DiagnosticCode.UNATTACHED_ROUTER))
             expand(node, state, hashSetOf(node.symbol.key), endpoints, diagnostics)
         }
         for (route in orphans) {
@@ -221,8 +231,14 @@ internal object FlaskLinker {
                 own != null -> own
                 else -> state.prefix
             }
-            val blocker = state.blocker
-                ?: if (own != null && !own.isExact) DiagnosticCode.DYNAMIC_PREFIX else if (edge.guessed) DiagnosticCode.UNRESOLVED_RECEIVER else null
+            val blocker = state.blocker ?: when {
+                own != null && !own.isExact -> {
+                    diagnostics += Diagnostic(Severity.WARNING, DiagnosticCode.DYNAMIC_PREFIX, source = edge.source)
+                    Blocker(DiagnosticCode.DYNAMIC_PREFIX, edge.source)
+                }
+                edge.guessed -> Blocker(DiagnosticCode.UNRESOLVED_RECEIVER)
+                else -> null
+            }
             expand(edge.child, State(effective, nameOf(edge.child.name, edge.name, state.names), blocker), chain, endpoints, diagnostics)
             chain.remove(edge.child.symbol.key)
         }
@@ -237,7 +253,8 @@ internal object FlaskLinker {
         val source = LinkSupport.sourceOf(route.file, route.pos)
         val joined = joinRule(state.prefix, route.rule)
         val methods = route.methods
-        val omit = state.blocker ?: if (methods == null || !joined.isExact) DiagnosticCode.DYNAMIC_VALUE else null
+        if (state.blocker?.source != null) return
+        val omit = state.blocker?.code ?: if (methods == null || !joined.isExact) DiagnosticCode.DYNAMIC_VALUE else null
         if (omit != null || methods == null) {
             diagnostics += Diagnostic(Severity.WARNING, omit ?: DiagnosticCode.DYNAMIC_VALUE, source = source)
             return
@@ -254,7 +271,7 @@ internal object FlaskLinker {
                 routeName = endpointName,
                 pathParams = params,
             )
-            endpoints.putIfAbsent(endpoint.key, endpoint)
+            endpoints.putIfAbsent(endpoint.declarationKey, endpoint)
         }
     }
 

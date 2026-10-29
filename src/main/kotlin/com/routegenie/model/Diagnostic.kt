@@ -18,7 +18,9 @@ enum class DiagnosticCode {
     INCLUDE_CYCLE,
     INTERNAL_ERROR,
     SCHEMA_FIELD_SKIPPED,
-    SCHEMA_NOT_DETERMINED;
+    SCHEMA_NOT_DETERMINED,
+    MOUNTED_APP,
+    UNSUPPORTED_PATTERN;
 
     val bundleKey: String get() = "diagnostic.${name.lowercase()}"
 }

@@ -33,6 +33,7 @@ import com.routegenie.discovery.RouteProvider
 import com.routegenie.model.Diagnostic
 import com.routegenie.model.DiagnosticCode
 import com.routegenie.model.Endpoint
+import com.routegenie.model.EndpointKeys
 import com.routegenie.model.PathSyntax
 import com.routegenie.model.RouteSnapshot
 import com.routegenie.model.Severity
@@ -85,6 +86,9 @@ class RouteDiscoveryEngine(
     private val generation = AtomicLong(0)
     private val runLock = Mutex()
     private val triggers = Channel<Unit>(Channel.CONFLATED)
+
+    /** When the newest request arrived; the debounce waits one delay after this instant, however many requests came before. */
+    private val lastTriggerNanos = AtomicLong(0)
     private val cache = WeightedLruCache<String, FactsEntry>(cacheWeightLimit) { it.weight }
     private val jobs = ArrayList<Job>()
     private val listeners: Disposable = Disposer.newDisposable("RouteDiscoveryEngine listeners")
@@ -176,7 +180,7 @@ class RouteDiscoveryEngine(
         active = value
         if (!value || disposed || !isStale) return
         synchronized(jobs) {
-            if (runs.get() == 0) launchColdScan() else triggers.trySend(Unit)
+            if (runs.get() == 0) launchColdScan() else trigger()
         }
     }
 
@@ -190,7 +194,12 @@ class RouteDiscoveryEngine(
     fun requestRefresh() {
         if (disposed) return
         isStale = true
-        if (active) triggers.trySend(Unit)
+        if (active) trigger()
+    }
+
+    private fun trigger() {
+        lastTriggerNanos.set(System.nanoTime())
+        triggers.trySend(Unit)
     }
 
     /**
@@ -433,9 +442,10 @@ class RouteDiscoveryEngine(
                 endpoints += endpoint
             }
         }
+        val numbered = EndpointKeys.disambiguate(endpoints)
         val previous = state.value
-        if (previous.generation > 0 && previous.endpoints == endpoints && previous.diagnostics == diagnostics) return
-        state.value = RouteSnapshot(generation.incrementAndGet(), endpoints, diagnostics)
+        if (previous.generation > 0 && previous.endpoints == numbered && previous.diagnostics == diagnostics) return
+        state.value = RouteSnapshot(generation.incrementAndGet(), numbered, diagnostics)
     }
 
     private fun failure(providerId: String, file: VirtualFile?, error: Throwable): Diagnostic {
@@ -446,10 +456,14 @@ class RouteDiscoveryEngine(
 
     private suspend fun debounceLoop() {
         for (signal in triggers) {
-            // Trailing-edge debounce: keep waiting while new requests keep arriving.
-            do {
-                delay(debounceMs)
-            } while (triggers.tryReceive().isSuccess)
+            // Trailing edge: the pass starts one delay after the LAST request, not one full delay per request that arrived meanwhile.
+            while (true) {
+                val remainingMs = debounceMs - (System.nanoTime() - lastTriggerNanos.get()) / NANOS_PER_MS
+                if (remainingMs <= 0) break
+                delay(remainingMs)
+            }
+            // A request that came in during the wait is covered by the pass that starts now.
+            triggers.tryReceive()
             if (!active) continue
             try {
                 refreshNow()
@@ -480,5 +494,6 @@ class RouteDiscoveryEngine(
         const val CANDIDATE_SUFFIX = "|c"
         const val DEPENDENCY_SUFFIX = "|d"
         const val UNCOMMITTED_STAMP = Long.MIN_VALUE
+        const val NANOS_PER_MS = 1_000_000L
     }
 }

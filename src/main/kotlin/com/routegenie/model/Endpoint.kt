@@ -24,9 +24,32 @@ data class Endpoint(
     val pathParams: List<PathParam> = emptyList(),
     val deprecated: Boolean = false,
     val problems: List<Diagnostic> = emptyList(),
+    /** Position among endpoints that are otherwise identical (same method, path, file and handler); see [EndpointKeys]. */
+    val ordinal: Int = 0,
 ) {
     val isPartial: Boolean get() = problems.isNotEmpty()
 
     /** Identity that survives refreshes and edits elsewhere in the file (no offsets or line numbers in it). */
-    val key: String = listOf(framework, method, path, source.path, handler.qualifiedName).joinToString("|")
+    val baseKey: String = listOf(framework, method, path, source.path, handler.qualifiedName).joinToString("|")
+
+    /** Unique within a snapshot (see [EndpointKeys.disambiguate]); equal to [baseKey] for the first of identical endpoints. */
+    val key: String = if (ordinal == 0) baseKey else "$baseKey|#$ordinal"
+
+    /** One declaration in the source expanded to one path: two expansions of the same line are the same endpoint. */
+    val declarationKey: String get() = "$key@${source.offset}"
+}
+
+object EndpointKeys {
+    /**
+     * Makes every [Endpoint.key] unique. Declarations that only differ by where they sit in a file (the same route in two
+     * test functions that each build their own app) share a base key; they get the ordinals 0, 1, 2 in source order, so
+     * the first keeps the plain key and the numbering does not depend on line numbers or on edits elsewhere in the file.
+     */
+    fun disambiguate(endpoints: List<Endpoint>): List<Endpoint> {
+        val groups = endpoints.groupBy { it.baseKey }.values.filter { it.size > 1 }
+        if (groups.isEmpty()) return endpoints
+        val ordinals = java.util.IdentityHashMap<Endpoint, Int>()
+        for (group in groups) group.sortedBy { it.source.offset }.forEachIndexed { index, endpoint -> ordinals[endpoint] = index }
+        return endpoints.map { endpoint -> ordinals[endpoint]?.let { endpoint.copy(ordinal = it) } ?: endpoint }
+    }
 }

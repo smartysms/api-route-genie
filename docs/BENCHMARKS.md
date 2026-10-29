@@ -198,6 +198,67 @@ No file that actually serves a route in these corpora was missed by the narrowed
 rather than misses: on Sentry 1,480 candidates (18 percent of the files) are read, of which the FastAPI provider extracts facts
 from 345 of 959 and the Flask provider from 676 of 920.
 
+## After the fixes (second run, same harness)
+
+Measured on 2026-10-30 after the changes listed below, same machine and harness (all 8 repositories, 4 GB test heap,
+`EXTRACT_PARALLELISM_CAP` 4). No other build of this project ran during the measurement; the machine was not otherwise idle
+(an IDE and a Gradle daemon were alive); treat small numbers as plus or minus 50 percent as before. The BEFORE column is
+the table above (commit `4344224`); the AFTER column is `build/reports/routegenie/bench/<repo>.txt` of this run.
+
+| repo | cold ms before / after | endpoints before / after | diagnostics before / after | refresh ms before / after | e2e 300 ms debounce before / after | e2e 50 ms debounce before / after | add file e2e ms before / after | delete file e2e ms after |
+|---|---|---|---|---|---|---|---|---|
+| fastapi | 2,427 / 1,823 | 1,471 / 1,779 | 47 / 50 | 118 / 127 | 717 / 411 | 205 / 151 | 722 / 405 | 394 |
+| flask | 221 / 293 | 115 / 152 | 222 / 222 | 23 / 21 | 625 / 325 | 124 / 74 | 624 / 325 | 316 |
+| superset | 4,008 / 812 | 11 / 11 | 113 / 8 | 55 / 41 | 677 / 350 | 169 / 101 | 742 / 325 | 319 |
+| django | 2,183 / 638 | 740 / 740 | 359 / 374 | 53 / 39 | 655 / 340 | 152 / 91 | 1,041 / 346 | 338 |
+| netbox | 739 / 335 | 0 / 0 | 1 / 1 | n/a | n/a | n/a | 682 / 331 | 327 |
+| sentry | 17,829 / 1,675 | 0 / 1,222 | 0 / 60 | n/a / 213 | n/a / 492 | n/a / 248 | 5,945 / 431 | 424 |
+
+Notes on the table: cold times of small repositories vary between runs by more than the differences shown (flask 221 vs
+293 ms is noise, see Machine); the large changes are Sentry (10.6x), superset and django. Endpoint increases are the
+function-scope collapse fix (fastapi +308, flask +37, all in test files) and, for Sentry, the re-export fix.
+Superset diagnostics fell from 113 to 8 (UNRESOLVED_RECEIVER 108 to 3), most likely because test files that only use
+`@mock.patch(...)` are no longer candidates (not verified file by file); its 11 endpoints are unchanged. Django diagnostics
+rose by 15: 7 are the new INFO UNSUPPORTED_PATTERN counters, 8 more UNRESOLVED_VIEW (152 to 160) were not investigated.
+
+Sentry detail (cold, thread time summed over threads): `findModuleFile` 5,441 ms (1,808 + 72 + 278 calls) before, 68 ms
+(1,809 calls) after; candidates for the FastAPI provider 959 before, 89 after; for the Flask provider 920 before, 51 after
+(decorator stub keys without a receiver, and `mock.patch`, no longer select files; 931 of 959 candidates were selected only by
+`@patch(...)`/`@mock.patch(...)` decorators). Extraction thread time: FastAPI 9,006 ms before, 628 ms after; Flask 7,328 ms
+before, 142 ms after. Warm run 225 ms before, 102 ms after. Edit to snapshot with the shipped 300 ms debounce: 492 ms (a
+refresh of 213 ms plus the debounce; the earlier 2x debounce pattern is gone: fastapi 717 to 411 ms, django 655 to 340 ms).
+Longest UI event-pump gap during cold: 53 ms. Heap after cold 167 MB (baseline about 131), 50 edits grew the heap by 4.7 MB with the cache
+size unchanged.
+
+Sentry endpoint spot check (15 random lines of `sentry-endpoints.tsv`, fixed seed, read against `src/sentry/api/urls.py`,
+`web/urls.py` and the included modules): prefixes composed correctly in all 15 (`api/0/` + `organizations/` + route,
+`api/0/` + `projects/` + route, `api/0/` + `users/` + route, `account/` + `settings/emails/`, `api/hooks/mailgun/inbound/`);
+0 wrong. Two cosmetic points seen, not fixed: some handler names carry the source root (`src.sentry...`) because Django module
+names come from the project-relative path, and a few views whose base class is outside the project are labelled DJANGO although
+they are DRF endpoints.
+
+### What changed, by bug
+
+1. Re-exported `urlpatterns` (`from app.urls import urlpatterns`, `from .x import *`, `urlpatterns = other.urlpatterns`,
+   and `urlpatterns += [...]` after an imported list) is followed by the Django linker; a root that offers no list at all
+   gives UNRESOLVED_INCLUDE. Sentry: 0 to 1,222 endpoints.
+2. `PyModuleFiles` (project service): module name to file map built in one pass, layout events queued without work and applied
+   by the next lookup, rebuilt on a root change or a burst above `MAX_PENDING_LAYOUT_EVENTS`, bounded by
+   `MAX_MODULE_INDEX_FILES` (falls back to the platform name index above it). Sentry lookups 5.4 s to 68 ms total, add/delete 5.9/6.2 s to 0.43/0.42 s.
+3. Candidate selection: decorator keys need a receiver and may not come from `mock`; this took Sentry's FastAPI/Flask candidates from
+   959/920 to 89/51. `EXTRACT_PARALLELISM_CAP` 2 to 4. A shared FastAPI/Flask extraction pass was NOT built: after the narrowing
+   the two providers share few files on Sentry (and the target was reached without it); on the fastapi corpus they still both read about
+   600 files, so that case would still gain.
+4. Debounce waits one delay after the last request (`lastTriggerNanos`), not one delay per request.
+5. `Endpoint.ordinal`/`EndpointKeys.disambiguate` give identical declarations unique stable keys at publish time; the first keeps
+   the old key, so stored per-endpoint UI state is unaffected.
+6. A Flask or FastAPI app handed to `mount(...)` (also wrapped, e.g. `WSGIMiddleware(flask_app)`) is no longer listed as a root app;
+   MOUNTED_APP is reported at the mount. The prefix is not applied (the wrapper may change it).
+7. DYNAMIC_PREFIX once per include (fastapi: 23 per-route diagnostics for one include become 1); UNSUPPORTED_PATTERN (INFO) counts
+   `APIRouter.route`, `urlpatterns` assigned in a function, and urlconfs that only include each other (guessed-root mode).
+   Not done: `@expose`, `register_model_view`, admin `get_urls()`, and WSGI wrapping other than `mount(...)`
+   (`DispatcherMiddleware`, `app.wsgi_app = ...`), which still list the wrapped Flask app under its own path.
+
 ## Bugs and defects, by priority
 
 No crash, no hang, no timeout, no engine exception in any run (all 8 repos completed; the slowest pass was 18 s).

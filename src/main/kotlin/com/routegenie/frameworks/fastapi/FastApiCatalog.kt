@@ -39,6 +39,8 @@ internal object FastApiCatalog {
                 "APIRouter", PrimitiveKind.CONTAINER, origins = setOf("fastapi.APIRouter", "fastapi.routing.APIRouter"),
                 prefix = prefix, tags = tags, deprecated = deprecated,
             ),
+            // Starlette style `@router.route(path)` is not handled; the linker counts it so the gap is visible.
+            Primitive(UNSUPPORTED_ROUTE_DECORATOR, PrimitiveKind.UNSUPPORTED_DECORATOR),
             Primitive(
                 "api_route", PrimitiveKind.ROUTE_DECORATOR, path = path, methods = methods, defaultMethod = defaultMethod,
                 label = label, tags = tags, deprecated = deprecated,
@@ -54,6 +56,11 @@ internal object FastApiCatalog {
             Primitive("mount", PrimitiveKind.MOUNT, path = path, child = ArgSlot("app", 1), composition = Composition.STACKED),
         ) + verbDecorators,
     )
+
+    const val UNSUPPORTED_ROUTE_DECORATOR = "route"
+
+    /** What the diagnostic of [UNSUPPORTED_ROUTE_DECORATOR] says is unsupported. */
+    const val UNSUPPORTED_ROUTE_NOTE = "APIRouter.route"
 
     /** Keyword-only arguments have no position. */
     private const val NOT_POSITIONAL = -1

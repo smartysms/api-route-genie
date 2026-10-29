@@ -54,6 +54,8 @@ internal object FlaskCatalog {
                 "register_blueprint", PrimitiveKind.ATTACH, child = ArgSlot("blueprint", 0), prefix = prefix,
                 label = ArgSlot("name", NOT_POSITIONAL), composition = Composition.OVERRIDE_JOIN,
             ),
+            // Flask has no `mount`; ASGI hosts (FastAPI, Starlette) mount a Flask app wrapped in WSGIMiddleware, which moves its paths.
+            Primitive("mount", PrimitiveKind.MOUNT, path = ArgSlot("path", 0), child = ArgSlot("app", 1)),
         ) + shortcuts,
     )
 

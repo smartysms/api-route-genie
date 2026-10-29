@@ -44,6 +44,17 @@ object LinkSupport {
         return if (complete && read.isNotEmpty()) read else null
     }
 
+    /**
+     * The names an argument refers to, looking one call deep: `flask_app` in `mount("/v1", flask_app)` and in
+     * `mount("/v1", WSGIMiddleware(flask_app))`. A mount whose child is wrapped like this serves it under a path that
+     * the wrapper may change, so the child is not listed as a root application.
+     */
+    fun wrappedRefs(arg: ArgFact?): List<RefFact> {
+        if (arg == null) return emptyList()
+        val inner = arg.call?.let { call -> (call.args + call.keywords.values).mapNotNull { it.ref } }.orEmpty()
+        return listOfNotNull(arg.ref) + inner
+    }
+
     /** Joins like [prefix] + [rest] but treats a missing prefix as empty. */
     fun concat(prefix: StrValue?, rest: StrValue): StrValue = if (prefix == null) rest else prefix + rest
 

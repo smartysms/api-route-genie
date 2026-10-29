@@ -48,6 +48,7 @@ internal class DjangoExtractor(private val file: PyFile) {
     private val registrations = ArrayList<Registration>()
     private val functions = LinkedHashMap<String, FunctionFact>()
     private val classes = LinkedHashMap<String, ClassFact>()
+    private val localPatternLists = ArrayList<Loc>()
     private var rootUrlconf: Expr? = null
     private var appName: Expr? = null
 
@@ -68,6 +69,7 @@ internal class DjangoExtractor(private val file: PyFile) {
             registrations = registrations.toList(),
             functions = functions.toMap(),
             classes = classes.toMap(),
+            localPatternLists = localPatternLists.toList(),
         )
     }
 
@@ -102,8 +104,14 @@ internal class DjangoExtractor(private val file: PyFile) {
             is PyAssignmentStatement -> assignment(statement)
             is PyAugAssignmentStatement -> augmented(statement)
             is PyExpressionStatement -> (statement.expression as? PyCallExpression)?.let { callStatement(it) }
-            is PyClass -> classFact(statement)?.let { classes[statement.name ?: return] = it }
-            is PyFunction -> functionFact(statement)?.let { functions[statement.name ?: return] = it }
+            is PyClass -> {
+                statement.methods.forEach { noteLocalPatterns(it) }
+                classFact(statement)?.let { classes[statement.name ?: return] = it }
+            }
+            is PyFunction -> {
+                noteLocalPatterns(statement)
+                functionFact(statement)?.let { functions[statement.name ?: return] = it }
+            }
             is PyIfStatement -> {
                 val parts = listOf(statement.ifPart) + statement.elifParts.toList()
                 parts.forEach { part -> part.statementList.statements.forEach { visit(it) } }
@@ -119,7 +127,8 @@ internal class DjangoExtractor(private val file: PyFile) {
             name == DjangoCatalog.SETTING_ROOT_URLCONF -> rootUrlconf = PyExprBuilder.build(value)
             name == DjangoCatalog.APP_NAME -> appName = PyExprBuilder.build(value)
             routerDecl(value)?.also { routers[name] = it } != null -> Unit
-            looksLikePatterns(value) -> {
+            looksLikePatterns(value) || (name == DjangoCatalog.URLPATTERNS && value is PyReferenceExpression) -> {
+                // `urlpatterns = other.urlpatterns` is a pattern list that is another list; the linker follows the splice.
                 val items = ArrayList<ListItem>()
                 collect(value, items)
                 val previous = lists[name].orEmpty()
@@ -129,12 +138,22 @@ internal class DjangoExtractor(private val file: PyFile) {
         }
     }
 
+    /** `urlpatterns = [...]` in a function body (test code builds them there) is not a module level list: counted, not followed. */
+    private fun noteLocalPatterns(function: PyFunction) {
+        for (statement in function.statementList.statements) {
+            val assignment = statement as? PyAssignmentStatement ?: continue
+            if ((assignment.targets.firstOrNull() as? PyTargetExpression)?.name == DjangoCatalog.URLPATTERNS) localPatternLists += loc(assignment)
+        }
+    }
+
     private fun augmented(statement: PyAugAssignmentStatement) {
         val name = (statement.target as? PyReferenceExpression)?.name ?: return
         if (statement.operation?.text != "+=") return
         val items = ArrayList<ListItem>()
         collect(statement.value, items)
-        if (name == DjangoCatalog.URLPATTERNS || name in lists) lists[name] = lists[name].orEmpty() + items
+        // `from app.urls import urlpatterns` followed by `urlpatterns += [...]` extends the imported list, so it is the base.
+        val imported = if (name == DjangoCatalog.URLPATTERNS && name !in lists && name in imports) listOf(SpliceItem(name, loc(statement))) else emptyList()
+        if (name == DjangoCatalog.URLPATTERNS || name in lists) lists[name] = (lists[name] ?: imported) + items
     }
 
     private fun callStatement(call: PyCallExpression) {

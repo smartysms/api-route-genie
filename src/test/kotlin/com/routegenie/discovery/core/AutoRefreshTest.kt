@@ -27,6 +27,27 @@ class AutoRefreshTest : EngineTestCase() {
         assertTrue("took $elapsedMs ms", elapsedMs <= Limits.REFRESH_DEBOUNCE_MS + Limits.BUDGET_REFRESH_ONE_FILE_MS + SCHEDULING_SLACK_MS)
     }
 
+    fun testSecondEditInsideTheQuietPeriodWaitsOnlyOneDelayAfterTheLastEdit() {
+        addSyntheticFiles(5, routesPerFile = 1)
+        val debounce = 1_000L
+        val engine = engine(FakeRouteProvider(), debounceMs = debounce)
+        engine.start(coldStart = false)
+        engine.refreshBlocking()
+
+        editFile("pkg0/module1.py", "# route /first\n")
+        val pause = System.currentTimeMillis() + debounce * 6 / 10
+        waitUntil("second edit time") { System.currentTimeMillis() >= pause }
+        val before = engine.snapshot.value.generation
+        val start = System.nanoTime()
+        editFile("pkg0/module1.py", "# route /second\n")
+        waitUntil("snapshot after the second edit") { engine.snapshot.value.generation > before }
+        val sinceLastEdit = (System.nanoTime() - start) / 1_000_000
+
+        println("last edit to snapshot: $sinceLastEdit ms (debounce $debounce ms)")
+        assertTrue("/second" in engine.snapshot.value.endpoints.map { it.path })
+        assertTrue("took $sinceLastEdit ms after the last edit", sinceLastEdit <= debounce + TRAILING_EDGE_SLACK_MS)
+    }
+
     fun testOutsideBatchOfManyFilesCausesOneRelink() {
         addSyntheticFiles(3, routesPerFile = 1)
         val provider = FakeRouteProvider()
@@ -219,5 +240,8 @@ class AutoRefreshTest : EngineTestCase() {
     private companion object {
         /** Thread hand-offs and the test's own event pumping; not part of any product budget. */
         const val SCHEDULING_SLACK_MS = 700L
+
+        /** Room for the refresh itself and scheduling; far below a second full delay. */
+        const val TRAILING_EDGE_SLACK_MS = 250L
     }
 }

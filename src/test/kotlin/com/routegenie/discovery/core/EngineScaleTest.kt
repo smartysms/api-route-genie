@@ -139,7 +139,7 @@ class EngineScaleTest : EngineTestCase() {
         assertEquals(1, Limits.extractParallelism(1))
         assertEquals(1, Limits.extractParallelism(2))
         assertEquals(Limits.EXTRACT_PARALLELISM_CAP, Limits.extractParallelism(64))
-        assertTrue(Limits.EXTRACT_PARALLELISM_CAP <= 2)
+        assertTrue(Limits.EXTRACT_PARALLELISM_CAP <= 4)
     }
 
     private companion object {

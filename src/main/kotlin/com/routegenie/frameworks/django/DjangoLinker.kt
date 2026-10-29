@@ -5,6 +5,7 @@ import com.routegenie.discovery.FileFacts
 import com.routegenie.discovery.LinkResult
 import com.routegenie.discovery.core.Expr
 import com.routegenie.discovery.core.ExprEvaluator
+import com.routegenie.discovery.core.ModuleNames
 import com.routegenie.discovery.core.ModuleTable
 import com.routegenie.model.Diagnostic
 import com.routegenie.model.DiagnosticCode
@@ -76,6 +77,7 @@ class DjangoLinker(private val options: Options = Options()) {
         private val bySuffix = HashMap<String, MutableList<DjangoFile>>()
         private val registrationsByRouter = HashMap<String, MutableList<Pair<DjangoFile, Registration>>>()
         private val evaluator = ExprEvaluator(ModuleTable(all.map { it.entry }))
+        private val visited = HashSet<String>()
 
         private fun eval(file: DjangoFile, expr: Expr): StrValue = evaluator.evaluate(file.entry, expr)
 
@@ -138,13 +140,61 @@ class DjangoLinker(private val options: Options = Options()) {
         fun execute(): LinkResult {
             val roots = rootModules()
             roots.forEach { root ->
-                val items = root.patternLists[DjangoCatalog.URLPATTERNS]
-                if (items != null) expand(root, items, Ctx("", emptyList(), emptyList(), emptyList(), setOf(listKey(root, DjangoCatalog.URLPATTERNS)), 0))
+                val list = urlpatternsOf(root, 0)
+                if (list == null) {
+                    // A root that offers no list at all must be visible: silently listing nothing hides a whole project.
+                    diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, SourceRef(root.path, 0, 1), root.module)
+                    return@forEach
+                }
+                val key = listKey(list.facts, list.name)
+                visited += key
+                expand(list.facts, list.facts.patternLists.getValue(list.name), Ctx("", emptyList(), emptyList(), emptyList(), setOf(key), 0))
             }
+            reportUncounted()
             return LinkResult(endpoints.toList(), diagnostics.toList())
         }
 
+        /**
+         * Patterns that exist but were not followed, so coverage can be measured: lists built inside functions, and (when no
+         * ROOT_URLCONF names a root and every list is guessed) lists that only other unreachable lists include.
+         */
+        private fun reportUncounted() {
+            all.forEach { file ->
+                file.facts.localPatternLists.forEach { loc ->
+                    diagnostics += Diagnostic(Severity.INFO, DiagnosticCode.UNSUPPORTED_PATTERN, listOf(DjangoCatalog.NOTE_LOCAL_URLPATTERNS), source(file, loc))
+                }
+            }
+            if (all.any { it.rootUrlconf != null }) return
+            val referrers = referrers()
+            fun unvisited(path: String) = all.firstOrNull { it.path == path }?.let { listKey(it, DjangoCatalog.URLPATTERNS) !in visited } == true
+            all.forEach { file ->
+                // Reached from a visited list whose include was omitted (computed prefix) is already reported there.
+                val onlyUnreachedReferrers = referrers[file.path].orEmpty().all { unvisited(it) }
+                if (DjangoCatalog.URLPATTERNS in file.patternLists && listKey(file, DjangoCatalog.URLPATTERNS) !in visited && onlyUnreachedReferrers) {
+                    diagnostics += Diagnostic(Severity.INFO, DiagnosticCode.UNSUPPORTED_PATTERN, listOf(DjangoCatalog.NOTE_UNREACHED_URLCONF), SourceRef(file.path, 0, 1))
+                }
+            }
+        }
+
         // --- Roots ---------------------------------------------------------------------------------------------------
+
+        /**
+         * The `urlpatterns` a module serves: its own list, or the one it re-exports (`from app.urls import urlpatterns`,
+         * `from .x import *`). The alias form `urlpatterns = other.urlpatterns` is a list that splices the other one and is
+         * followed by the expansion itself.
+         */
+        private fun urlpatternsOf(file: DjangoFile, depth: Int): ListSym? {
+            if (DjangoCatalog.URLPATTERNS in file.patternLists) return ListSym(file, DjangoCatalog.URLPATTERNS)
+            if (depth >= Limits.MAX_URLCONF_DEPTH) return null
+            if (DjangoCatalog.URLPATTERNS in file.imports) {
+                (lookup(file, DjangoCatalog.URLPATTERNS) as? ListSym)?.let { return it }
+            }
+            for (star in file.facts.stars) {
+                val target = findModule(ModuleNames.absolute(file.module, file.entry.isPackage, star.level, star.module)) ?: continue
+                if (target !== file) urlpatternsOf(target, depth + 1)?.let { return it }
+            }
+            return null
+        }
 
         private fun rootModules(): List<DjangoFile> {
             val configured = all.filter { it.rootUrlconf != null }
@@ -164,16 +214,22 @@ class DjangoLinker(private val options: Options = Options()) {
             }
         }
 
-        private fun referencedPaths(): Set<String> {
-            val paths = HashSet<String>()
+        private fun referencedPaths(): Set<String> = referrers().keys
+
+        /** For every module that some pattern list includes or splices: the paths of the modules whose lists do so. */
+        private fun referrers(): Map<String, Set<String>> {
+            val map = HashMap<String, MutableSet<String>>()
             fun scan(owner: DjangoFile, items: List<ListItem>) {
+                fun note(path: String) {
+                    map.getOrPut(path) { HashSet() } += owner.path
+                }
                 items.forEach { item ->
                     when (item) {
-                        is SpliceItem -> pathOf(lookup(owner, item.ref))?.takeIf { it != owner.path }?.let { paths += it }
+                        is SpliceItem -> pathOf(lookup(owner, item.ref))?.takeIf { it != owner.path }?.let(::note)
                         is RouteItem -> (item.target as? IncludeTarget)?.let { include ->
                             when (val spec = include.spec) {
-                                is ModuleSpec -> (eval(owner, spec.name) as? StrValue.Known)?.let { findModule(it.text) }?.let { paths += it.path }
-                                is RefSpec -> pathOf(lookup(owner, spec.ref))?.takeIf { it != owner.path }?.let { paths += it }
+                                is ModuleSpec -> (eval(owner, spec.name) as? StrValue.Known)?.let { findModule(it.text) }?.let { note(it.path) }
+                                is RefSpec -> pathOf(lookup(owner, spec.ref))?.takeIf { it != owner.path }?.let(::note)
                                 is InlineSpec -> scan(owner, spec.items)
                                 is OpaqueSpec -> Unit
                             }
@@ -183,7 +239,7 @@ class DjangoLinker(private val options: Options = Options()) {
                 }
             }
             all.forEach { facts -> facts.patternLists.values.forEach { scan(facts, it) } }
-            return paths
+            return map
         }
 
         private fun pathOf(sym: Sym): String? = when (sym) {
@@ -215,6 +271,7 @@ class DjangoLinker(private val options: Options = Options()) {
         private fun enter(
             facts: DjangoFile, key: String, items: List<ListItem>, ctx: Ctx, namespace: String?, at: DjangoFile, loc: Loc,
         ) {
+            visited += key
             if (key in ctx.chain || ctx.depth >= Limits.MAX_URLCONF_DEPTH) {
                 diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, source(at, loc), key)
                 return

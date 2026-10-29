@@ -27,6 +27,9 @@ object PyCandidateRules {
     /** File name endings of generated modules (protocol buffers). */
     private val GENERATED_SUFFIXES = listOf("_pb2.py", "_pb2_grpc.py", "_pb2.pyi")
 
+    /** Receivers of decorators that are spelled like a route (`mock.patch`) but belong to test tooling. */
+    private val NON_ROUTER_RECEIVERS = setOf("mock", "unittest.mock", "mocker", "monkeypatch")
+
     private val TEST_DIRECTORIES = setOf("tests", "test", "testing")
     private const val TEST_PREFIX = "test_"
     private const val TEST_SUFFIX = "_test.py"
@@ -53,6 +56,16 @@ object PyCandidateRules {
         }
         val (tests, application) = kept.partition { isTest(project, it, index) }
         return application.sortedBy { it.path } + tests.sortedBy { it.path }
+    }
+
+    /**
+     * Whether a decorator written as [key] (`router.get`, from the decorator stub index) can declare a route of one of
+     * [methods]. A route decorator always has a receiver, so a bare `@patch(...)` (thousands of them in a large test suite,
+     * which is what made hundreds of files candidates for nothing) and `@mock.patch(...)` are not.
+     */
+    fun mayDeclareRoute(key: String, methods: Set<String>): Boolean {
+        val receiver = key.substringBeforeLast('.', "")
+        return receiver.isNotEmpty() && key.substringAfterLast('.') in methods && receiver !in NON_ROUTER_RECEIVERS
     }
 
     /** By project-relative path alone (an absolute path would make a checkout under a folder named `build` vanish). */

@@ -17,6 +17,9 @@ enum class PrimitiveKind {
     /** `@x.name(path)` declaring a route on the receiver. */
     ROUTE_DECORATOR,
 
+    /** A decorator that declares routes in a way the linker does not support: only counted, never listed, never a candidate. */
+    UNSUPPORTED_DECORATOR,
+
     /** `x.name(path, handler)` declaring a route imperatively. */
     ROUTE_CALL,
 
@@ -99,7 +102,8 @@ class PrimitiveTable(
     override val constructorNames: Set<String> =
         primitives.filter { it.kind == PrimitiveKind.APP || it.kind == PrimitiveKind.CONTAINER }
             .flatMap { it.origins }.map { it.substringAfterLast('.') }.toSet()
-    override val decoratorMethods: Set<String> = names(PrimitiveKind.ROUTE_DECORATOR)
+    override val decoratorMethods: Set<String> = names(PrimitiveKind.ROUTE_DECORATOR, PrimitiveKind.UNSUPPORTED_DECORATOR)
+    override val candidateDecoratorMethods: Set<String> = names(PrimitiveKind.ROUTE_DECORATOR)
     override val callMethods: Set<String> = names(PrimitiveKind.ROUTE_CALL, PrimitiveKind.ATTACH, PrimitiveKind.MOUNT)
 
     /** Every primitive whose first argument is a path, plus constructors whose first argument names the object. */
@@ -112,7 +116,7 @@ class PrimitiveTable(
 
     /** Constructors and attachment calls; decorators come from the decorator index, the framework's name selects nothing. */
     override val candidateWords: Collection<String> =
-        (constructorNames + names(PrimitiveKind.ATTACH, PrimitiveKind.ROUTE_CALL) + extraWords).toSet()
+        (constructorNames + names(PrimitiveKind.ATTACH, PrimitiveKind.ROUTE_CALL, PrimitiveKind.MOUNT) + extraWords).toSet()
 
     override val textMarkers: List<Set<String>> =
         (names(PrimitiveKind.ROUTE_DECORATOR, PrimitiveKind.ROUTE_CALL, PrimitiveKind.ATTACH, PrimitiveKind.MOUNT).map { setOf(".$it(") } +

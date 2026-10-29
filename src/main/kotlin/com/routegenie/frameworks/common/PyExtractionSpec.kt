@@ -13,6 +13,12 @@ interface PyExtractionSpec {
     /** Decorator method names that may declare a route, e.g. `get`, `route`. */
     val decoratorMethods: Set<String>
 
+    /**
+     * The decorator names that make a file a candidate through the decorator index. Narrower than [decoratorMethods] when some
+     * decorators are only read to be reported: they must not pull in every file that uses the name for something else.
+     */
+    val candidateDecoratorMethods: Set<String> get() = decoratorMethods
+
     /** Statement-call method names that attach or declare routes, e.g. `include_router`, `add_url_rule`. */
     val callMethods: Set<String>
 

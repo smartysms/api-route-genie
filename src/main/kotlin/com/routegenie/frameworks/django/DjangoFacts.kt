@@ -140,16 +140,18 @@ data class DjangoFacts(
     val registrations: List<Registration>,
     val functions: Map<String, FunctionFact>,
     val classes: Map<String, ClassFact>,
+    /** Places where `urlpatterns` is assigned inside a function or method; not followed, only counted. */
+    val localPatternLists: List<Loc> = emptyList(),
 ) : ModuleSource {
     /** True when the file adds nothing the linker could use, so extraction reports "no routes". */
     val isEmpty: Boolean
         get() = rootUrlconf == null && appName == null && patternLists.isEmpty() && routers.isEmpty() &&
-            registrations.isEmpty() && functions.isEmpty() && classes.isEmpty()
+            registrations.isEmpty() && functions.isEmpty() && classes.isEmpty() && localPatternLists.isEmpty()
 
     override val weight: Int by lazy(LazyThreadSafetyMode.PUBLICATION) {
         val nodes = imports.size + stars.size + consts.sumOf { 1 + (it.value?.nodeCount() ?: 0) } +
             patternLists.values.sumOf { items -> items.sumOf { itemNodes(it) } } + routers.size + registrations.size * 4 +
-            functions.size * 3 + classes.values.sumOf { 4 + it.bases.size + it.methods.size + it.actions.size * 6 }
+            functions.size * 3 + localPatternLists.size * 2 + classes.values.sumOf { 4 + it.bases.size + it.methods.size + it.actions.size * 6 }
         Limits.FACT_ENTRY_BYTES + nodes * Limits.FACT_NODE_BYTES
     }
 
@@ -181,6 +183,10 @@ data class DjangoFacts(
             }
         }
         patternLists.values.forEach(::items)
+        // A module without its own list may re-export one (`from app.urls import urlpatterns`, `from .x import *`).
+        if (DjangoCatalog.URLPATTERNS !in patternLists && (stars.isNotEmpty() || imports.any { it.local == DjangoCatalog.URLPATTERNS })) {
+            refs += DjangoCatalog.URLPATTERNS
+        }
         registrations.forEach { refs += it.router; refs += it.viewset }
         classes.values.forEach { refs += it.bases }
         refs.map { it.split('.') }

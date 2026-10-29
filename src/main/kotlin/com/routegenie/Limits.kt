@@ -77,10 +77,10 @@ object Limits {
     const val STAMP_CHECK_BATCH_FILES = 500
 
     /**
-     * Most threads that extract files at the same time. Low on purpose: extraction runs next to the user's work, and the
-     * research (06) measured 2 threads at about 2.4x the single-thread speed.
+     * Most threads that extract files at the same time. Extraction runs off the UI thread and the research (06) measured
+     * near-linear scaling up to 4 threads; a machine with fewer cores gets half of them (see [extractParallelism]).
      */
-    const val EXTRACT_PARALLELISM_CAP = 2
+    const val EXTRACT_PARALLELISM_CAP = 4
 
     /** Largest Python file that is read for routes (bytes); bigger files are generated or data and are skipped. */
     const val MAX_CANDIDATE_FILE_BYTES = 1_000_000L
@@ -93,6 +93,12 @@ object Limits {
 
     /** Dotted module names whose project file lookup is remembered between passes. */
     const val MAX_MODULE_LOOKUPS = 20_000
+
+    /** Python files the module-name index holds; a bigger project falls back to scanning the platform's file name index. */
+    const val MAX_MODULE_INDEX_FILES = 250_000
+
+    /** File layout events kept for the module-name index between two lookups; more than this means a rebuild is cheaper. */
+    const val MAX_PENDING_LAYOUT_EVENTS = 5_000
 
     /** How many nested include() levels (and list splices) the Django linker follows before it reports a cycle. */
     const val MAX_URLCONF_DEPTH = 32

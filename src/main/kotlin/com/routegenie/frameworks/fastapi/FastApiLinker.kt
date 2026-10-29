@@ -48,14 +48,27 @@ internal object FastApiLinker {
 
     private class Edge(val child: Node, val prefix: StrValue, val tags: List<String>, val deprecated: Boolean, val source: SourceRef)
 
-    private class Node(val symbol: SymbolRef, val isApp: Boolean, val prefix: StrValue, val tags: List<String>, val deprecated: Boolean) {
+    private class Node(
+        val symbol: SymbolRef,
+        val isApp: Boolean,
+        val prefix: StrValue,
+        val tags: List<String>,
+        val deprecated: Boolean,
+        val source: SourceRef,
+    ) {
         val routes = ArrayList<Route>()
         val edges = ArrayList<Edge>()
         var hasIncoming = false
     }
 
-    /** What accumulates from an application down to a route; [blocker] is why nothing below can be listed. */
-    private class Acc(val path: StrValue, val tags: List<String>, val deprecated: Boolean, val blocker: DiagnosticCode?)
+    /**
+     * Why nothing below can be listed. A blocker with a [source] was reported once at that place (an include with a
+     * computed prefix), so the routes below it add no diagnostic of their own.
+     */
+    private class Blocker(val code: DiagnosticCode, val source: SourceRef? = null)
+
+    /** What accumulates from an application down to a route. */
+    private class Acc(val path: StrValue, val tags: List<String>, val deprecated: Boolean, val blocker: Blocker?)
 
     fun link(facts: Collection<FileFacts>): LinkResult {
         val files = PyResolver.resolve(facts, FastApiCatalog.PROVIDER_ID).sortedBy { it.path }
@@ -71,7 +84,7 @@ internal object FastApiLinker {
             val prefix = primitive.prefix?.of(assign.call)?.str ?: LinkSupport.EMPTY
             val tags = LinkSupport.tagsOf(primitive.tags?.of(assign.call))
             val deprecated = primitive.deprecated?.of(assign.call)?.bool == true
-            val node = Node(SymbolRef(file, assign.scope, assign.name), isApp, prefix, tags, deprecated)
+            val node = Node(SymbolRef(file, assign.scope, assign.name), isApp, prefix, tags, deprecated, LinkSupport.sourceOf(file, assign.pos))
             nodes.putIfAbsent(node.symbol.key, node)
         }
 
@@ -84,6 +97,16 @@ internal object FastApiLinker {
         for (file in files) {
             val declared = ArrayList<Pair<Int, () -> Unit>>()
             for (d in file.decorators) {
+                if (table.methodPrimitive(d.method, PrimitiveKind.UNSUPPORTED_DECORATOR) != null) {
+                    declared += d.pos.offset to {
+                        if (nodeOf(file, d.scope, d.receiver) != null) {
+                            diagnostics += LinkSupport.diagnostic(
+                                DiagnosticCode.UNSUPPORTED_PATTERN, LinkSupport.sourceOf(file, d.pos), Severity.INFO, FastApiCatalog.UNSUPPORTED_ROUTE_NOTE,
+                            )
+                        }
+                    }
+                    continue
+                }
                 val primitive = table.methodPrimitive(d.method, PrimitiveKind.ROUTE_DECORATOR) ?: continue
                 declared += d.pos.offset to {
                     val route = routeOf(file, primitive, d.pos, d.call, d.handler, null)
@@ -110,7 +133,13 @@ internal object FastApiLinker {
                             val isMount = primitive.kind == PrimitiveKind.MOUNT
                             val child = nodeOf(file, c.scope, primitive.child?.of(c.call)?.ref)
                             when {
-                                child == null && isMount -> Unit
+                                child == null && isMount -> for (ref in LinkSupport.wrappedRefs(primitive.child?.of(c.call))) {
+                                    // `app.mount("/v1", Middleware(sub))`: the wrapper decides the served path, so `sub` is not a root.
+                                    nodeOf(file, c.scope, ref)?.let { wrapped ->
+                                        wrapped.hasIncoming = true
+                                        diagnostics += LinkSupport.diagnostic(DiagnosticCode.MOUNTED_APP, source)
+                                    }
+                                }
                                 child == null -> diagnostics += LinkSupport.diagnostic(DiagnosticCode.UNRESOLVED_INCLUDE, source)
                                 parent == null -> diagnostics += LinkSupport.diagnostic(DiagnosticCode.UNRESOLVED_RECEIVER, source)
                                 else -> {
@@ -135,7 +164,7 @@ internal object FastApiLinker {
 
         for (node in nodes.values) {
             if (node.hasIncoming) continue
-            val blocker = if (node.isApp) null else DiagnosticCode.UNATTACHED_ROUTER
+            val blocker = if (node.isApp) null else Blocker(DiagnosticCode.UNATTACHED_ROUTER)
             expand(node, Acc(LinkSupport.EMPTY, emptyList(), false, blocker), hashSetOf(node.symbol.key), endpoints, diagnostics)
         }
         for (route in orphans) {
@@ -145,25 +174,37 @@ internal object FastApiLinker {
     }
 
     private fun expand(node: Node, acc: Acc, chain: MutableSet<String>, endpoints: MutableMap<String, Endpoint>, diagnostics: MutableSet<Diagnostic>) {
-        val base = Acc(acc.path + node.prefix, acc.tags + node.tags, acc.deprecated || node.deprecated, acc.blocker ?: dynamicPrefix(node.prefix))
+        val base = Acc(
+            acc.path + node.prefix, acc.tags + node.tags, acc.deprecated || node.deprecated,
+            acc.blocker ?: dynamicPrefix(node.prefix, node.source, diagnostics),
+        )
         for (route in node.routes) emit(route, base, endpoints, diagnostics)
         for (edge in node.edges) {
             if (!chain.add(edge.child.symbol.key)) {
                 diagnostics += LinkSupport.diagnostic(DiagnosticCode.INCLUDE_CYCLE, edge.source)
                 continue
             }
-            val next = Acc(base.path + edge.prefix, base.tags + edge.tags, base.deprecated || edge.deprecated, base.blocker ?: dynamicPrefix(edge.prefix))
+            val next = Acc(
+                base.path + edge.prefix, base.tags + edge.tags, base.deprecated || edge.deprecated,
+                base.blocker ?: dynamicPrefix(edge.prefix, edge.source, diagnostics),
+            )
             expand(edge.child, next, chain, endpoints, diagnostics)
             chain.remove(edge.child.symbol.key)
         }
     }
 
-    private fun dynamicPrefix(prefix: StrValue): DiagnosticCode? = if (prefix.isExact) null else DiagnosticCode.DYNAMIC_PREFIX
+    /** A computed prefix is reported once, where it is written, instead of once for every route below it. */
+    private fun dynamicPrefix(prefix: StrValue, source: SourceRef, diagnostics: MutableSet<Diagnostic>): Blocker? {
+        if (prefix.isExact) return null
+        diagnostics += Diagnostic(Severity.WARNING, DiagnosticCode.DYNAMIC_PREFIX, source = source)
+        return Blocker(DiagnosticCode.DYNAMIC_PREFIX, source)
+    }
 
     private fun emit(route: Route, acc: Acc, endpoints: MutableMap<String, Endpoint>, diagnostics: MutableSet<Diagnostic>) {
         val source = LinkSupport.sourceOf(route.file, route.pos)
         val methods = route.methods
-        val omit = acc.blocker ?: when {
+        if (acc.blocker?.source != null) return
+        val omit = acc.blocker?.code ?: when {
             methods == null || !route.path.isExact -> DiagnosticCode.DYNAMIC_VALUE
             else -> null
         }
@@ -187,7 +228,7 @@ internal object FastApiLinker {
                 pathParams = params,
                 deprecated = deprecated,
             )
-            endpoints.putIfAbsent(endpoint.key, endpoint)
+            endpoints.putIfAbsent(endpoint.declarationKey, endpoint)
         }
     }
 
