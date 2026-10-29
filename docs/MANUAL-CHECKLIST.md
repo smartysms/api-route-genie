@@ -67,3 +67,99 @@ in the IDE the plugin is installed in. Use a project with FastAPI, Flask and Dja
 29. Settings | Tools | API Route Genie: the "show gutter icons" option is automatic by default (off when the paid Python plugin is
     installed, on otherwise); an explicit choice always wins; Apply adds or removes the icons immediately without a restart.
 30. In an IDE that has the paid Python plugin enabled, the default is off and the settings page says so.
+
+# Calling endpoints (request panel, response viewer, cURL)
+
+Things the headless tests cannot show: real painting, focus, the confirmation dialog, a real server. Start a local FastAPI or
+Flask app (for example `uvicorn app:app`) and select one of its endpoints. Everything below happens inside the Route Genie
+window; no editor tab, pop-up or separate window opens (the only dialog is the one-time confirmation for a non-local host).
+
+## Layout
+31. Select an endpoint: the tabs below the list show "Overview" and "Request". The Request page has the form on top and the
+    response below. Widen the window past about 900 px: the response moves to the right of the form; narrow it: stacked again.
+    Layout menu in the page toolbar: Automatic / Request above response / Request beside response; the choice is kept after restart.
+32. "Hide endpoint list" in the page toolbar hides the filter bar and the list, so the Request page fills the window. Press it
+    again to bring the list back. Hiding must not lose the selected endpoint or the typed values.
+33. Light and dark theme: status pill colors (2xx green, 3xx cyan, 4xx orange, 5xx red), table and editor colors are readable.
+
+## Building and sending
+34. An endpoint whose method is ANY shows a method dropdown (default GET); a normal endpoint shows its method as fixed text.
+    Pick POST for an ANY endpoint, select another endpoint and come back: POST is still chosen (also after an IDE restart).
+35. Path parameters appear as fields with their type as hint. Type a wrong value for an int parameter (letters) and press Send:
+    a red message appears next to the field and nothing is sent (the server log stays quiet).
+36. Base URL field: change it to your server address. Query and Headers tables: add a row with the plus button, untick a row
+    to disable it. Auth: Bearer with a token; the secret is not saved anywhere (restart the IDE: it is gone).
+37. Body: choose JSON, type a body, press Ctrl+Enter inside the editor: the request is sent (and only then).
+38. Press Send for a normal endpoint: the pill shows the status, the line shows time, size and protocol, the Body tab shows the
+    pretty-printed JSON with highlighting. Headers tab lists the response headers. "Request sent" shows the exact request
+    (credentials as <redacted>).
+39. Point the base URL at a public host (for example an example domain) and press Send: ONE confirmation dialog names the host.
+    Cancel: nothing is sent. Confirm: it is sent and the host is not asked again in this session.
+40. Stop the server and press Send: a friendly message ("Connection refused ...") appears, the Send button comes back.
+41. Press Send on a slow endpoint and press Cancel/Stop: the request ends as "stopped" within a moment; no error balloon.
+42. "Generate body": for an endpoint with no declared body shows "The code does not declare a request body for this endpoint"
+    and changes nothing. When a body can be derived (later phase), typing something first makes a Replace/Cancel bar appear.
+
+## Streaming
+43. Call an SSE endpoint (text/event-stream): the Body tab fills live, an Events tab appears with rows (time, event, id,
+    data); selecting a row shows its JSON data pretty-printed. Counters (bytes, events, elapsed) keep running; Stop ends it.
+44. Scroll the live body up: auto-scroll turns off by itself; scroll to the end: it follows again. The toolbar toggle does the same.
+45. A very fast stream stays responsive (typing in the form, switching tabs); when it outruns the viewer a notice says how
+    much older output was dropped. Clear empties the view. Mode menu: "Always stream" on a normal JSON endpoint and
+    "Always wait for the whole response" on a stream behave as named.
+46. Close the tool window or the project while a stream runs: no error, and the server sees the connection close.
+
+## cURL and history
+47. cURL tab: choose bash / cmd / PowerShell (the choice is kept). Copy the command and run it in the real shell: the server
+    receives the same request. Check bodies with quotes, a trailing backslash, and non-ASCII text in each shell. In cmd a long
+    or non-ASCII body produces a "save as body.json" note.
+48. "Include secrets" is off by default: the Authorization value shows as <redacted>. Switch it on: the real value appears.
+49. Paste a command from the browser ("Copy as cURL (bash)" or "(cmd)") into "Import a cURL command" and press Import: method,
+    URL pieces, headers and body fill the form; flags that were not applied are listed.
+50. History tab: sent requests appear newest first; double-click one to restore its form (credential headers come back as
+    <redacted> and must be typed again).
+51. Right click an endpoint in the list: "Send Request..." opens its Request page and focuses Send (it does not send);
+    "Copy as cURL" puts the command on the clipboard in the shell chosen on the cURL tab.
+
+## Not testable headless (and therefore only checked here)
+- Painting of the pill, tables and editors in both themes; split orientation on a real resize; focus after "Send Request...".
+- The one confirmation dialog for a non-local host; the tree context menu entries.
+- Behaviour against a real SSE server and a 5 MB or larger response (the tests use a fake engine and measure formatting only).
+
+## JSON viewer
+Needs a real IDE run (`runIde`) and a FastAPI/Django/Flask app that can return big JSON. J1-J5 can be done with any response.
+
+J1. Send a request that returns JSON: the Body shows a segmented control (Tree | Pretty | Raw | Table). The tree opens with the root expanded; strings are green, numbers blue, true/false/null purple (colors follow the editor color scheme, so they change with the theme: try Light, Darcula, Dracula and a Material theme).
+J2. Click a row: the breadcrumb at the bottom shows the path (`$ > users > [1] > name`); click a segment to jump to that ancestor. Right click: Copy Path, Copy Value (objects copy as formatted JSON), Copy Key. Ctrl+C copies the value.
+J3. Toolbar: Expand (levels 1-4 and "as deep as possible"), Collapse All, Copy, Save to File, Open as File. In Pretty/Raw also Soft-Wrap; in Pretty also Format (Sort Keys, Minify, Indent 2/4).
+J4. Type in the search field: matches appear in the tree one by one (Enter = next, Shift+Enter = previous, Esc clears); the count reads `3 / 42`. Toggle Match Case, Regex, and Keys/Values. A bad regex shows "Invalid pattern" in red and nothing freezes. In Pretty or Raw the same field searches the text on screen.
+J5. Pretty view: braces and brackets fold (the gutter arrows), line numbers are shown, colors are the editor's JSON colors. Switching modes keeps the selected row (Pretty jumps to it).
+J6. Table: choose a response that is an array of objects (or an object with one such array): one column per key, click a header to sort (a second click reverses, a third clears), Ctrl+C copies the cell, right click copies the row as JSON.
+J7. Invalid JSON (for example an endpoint that returns a Python repr with single quotes): a banner states line, column and the reason, the Raw view opens with the text as received, Pretty/Table are greyed out with a hint, the partial tree is still available.
+J8. Large response (generate 30-60 MB of JSON, or point the app at a big file): the tree appears within a fraction of a second while the status line counts "Indexing... 43%"; the window never freezes; scrolling and expanding stay smooth; the IDE heap (Memory Indicator) returns to its old level after you send a small request or close the window. Pretty and Raw show one page at a time with Previous/Next in a thin bar ("Page 3 of 41").
+J9. A body above the text limit (about 128 MB): Pretty and Raw show a notice with Save to File and Open as File; the tree and search still work.
+J10. Compare (needs the request panel integration): choose the previous response and the current one. Added values are green, removed red, changed amber; unchanged parts are folded into "... N unchanged". Toolbar: Ignore Key Order, Numbers by Value, Unified View, Next/Previous Difference, Copy Diff (unified text), Copy Changed Paths. The two fields filter by key or path (`updatedAt, $.items[*].ts`) and match array items by a key (`id`).
+J11. Switch the IDE theme while the viewer is open: tree, table, editor text and the diff colors follow it without reopening the window.
+J12. Resize the tool window narrow (about 400 px): toolbar icons stay reachable, the diff stays readable (use Unified View), nothing overlaps.
+
+Not testable headless: real scrolling feel with 50 MB, focus/keyboard routing (Enter in the search field, arrow keys on the segmented control), the Save dialog, Open as File in an editor tab, text selection and the context menus.
+
+## Workspace integration (environments, persistence, JSON in the response, Compare)
+Needs a real IDE run and a FastAPI/Django/Flask app. Items W1-W14. Everything stays inside the Route Genie window; the only dialog is the one-time confirmation before sending to a non-local host.
+
+W1. Open the Request page of an endpoint. The row above the form reads "Environment" with a drop-down and "Edit environments". The first time, one environment named Default exists and points at the usual dev server of the framework of the endpoint (Django and FastAPI 127.0.0.1:8000, Flask 127.0.0.1:5000).
+W2. The form is split into tabs: Query parameters, Headers, Authentication, Body. Choose Body, pick JSON: the editor appears (it must not say "This request has no body"). Type a body, switch tabs and back: the text is kept.
+W3. "Edit environments" replaces the form with the environment editor (no dialog). Create "Staging": a name, a base URL, authentication Bearer with a token, a variable `tenant` and a secret variable `apiKey`. Press Save: "Saved" appears, the drop-down lists Staging, and the base URL of the form changes to the staging address. "Back to request" returns to the form.
+W4. Persistence: change the base URL, the method of an ANY endpoint (pick POST), a query row and the body of an endpoint. Select another endpoint and come back: all are restored. Restart the IDE: the same environment, base URL, method, query rows and body are there.
+W5. Secrets: after the restart the token typed in W3 is still used (send a request to an endpoint that echoes or checks the Authorization header). Open .idea/workspace.xml: it contains the environment name and base URL but neither the token nor the value of the secret variable (search for the text you typed). The Authentication tab shows "Saved, type to replace" in the empty secret field.
+W6. Switching the environment in the drop-down changes the base URL and the secrets used for the next send; a secret stored for Staging is not sent to Default.
+W7. Confirm a public host once (a base URL such as https://example.org, press Send, Confirm). Restart the IDE and send again: it is not asked again. A different public host asks again.
+W8. History tab after a restart: the lines of earlier sends are there (verb, URL with credentials hidden, status, time) and read "body not kept"; double-click on a line of another endpoint selects that endpoint.
+W9. A JSON response appears in the visualizer (Tree, Pretty, Raw, Table, search); a text or HTML response stays in the plain viewer; an SSE or NDJSON stream stays in the live views with Events.
+W10. A response larger than 5 MB (generate 20-60 MB of JSON): the status line shows the full size, the tree opens quickly while "Indexing" counts, the editor never freezes, and the folder `<temp>/routegenie` holds `routegenie-resp-*.bin` files while it is shown. Send small requests: the file of an older big response disappears once more than two big ones are newer (the newest two stay for comparison); closing the tool window or the project removes all of them.
+W11. Compare: send a JSON request twice (change something on the server in between). Response toolbar, Compare menu: "Compare with previous response" switches the body area to the diff (added green, removed red, changed amber); the "Show diff" toggle in the toolbar goes back to the body and forth. "Compare with..." lists the earlier responses that still have their body (five at most); older history lines read "body not kept". With only one response the notice says there is nothing to compare with.
+W12. Compare with a big (spilled) response works for the previous one; the diff refuses a side above 64 MB with a message.
+W13. A call to a stopped server shows "The request did not get an answer" with the reason in the body area and "failed" in the status line (no empty editor).
+W14. Polish (look at it in Light, Darcula and a third-party theme): the filter box reads "Filter endpoints" and a line with the filter syntax appears under it while the empty box has focus; the tooltip lists the keys. In the details panel the verb badge, the path and the copy icon share the title row, "Details" is a captioned block, tag chips have a complete outline. A selected row keeps the hue of its verb badge (readable lettering in focused and unfocused selection).
+
+Not testable headless for this part: the look of the real toolbar icons and tabs (the snapshot harness draws toolbar buttons as plain squares and clips some bold text), the body editor of the form in a snapshot, PasswordSafe prompts of the OS keychain, and everything that needs focus or a real resize.

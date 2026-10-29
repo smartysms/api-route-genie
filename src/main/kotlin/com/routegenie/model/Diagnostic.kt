@@ -16,7 +16,9 @@ enum class DiagnosticCode {
     UNRESOLVED_RECEIVER,
     UNATTACHED_ROUTER,
     INCLUDE_CYCLE,
-    INTERNAL_ERROR;
+    INTERNAL_ERROR,
+    SCHEMA_FIELD_SKIPPED,
+    SCHEMA_NOT_DETERMINED;
 
     val bundleKey: String get() = "diagnostic.${name.lowercase()}"
 }

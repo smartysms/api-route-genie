@@ -71,3 +71,17 @@ both keeping the linker unchanged:
 The externalizer needs one string table per file (names are repeated heavily) and a version number; `Expr` is a closed
 sealed hierarchy, so it serializes with a tag byte per node. `FactsEntry.stamp` is not persisted: the platform's staleness
 check replaces it.
+
+## The request workspace
+
+`ui/request` is wired to the stores of `clientide`:
+
+- `RouteGenieClientState` (workspace file, bounded): environments and the last one used, the last input and method per `Endpoint.key`, confirmed hosts, history lines. It holds no secret: secret variables keep their names, sensitive header and query values are blanked by `LastInputs`.
+- Secrets live in the IDE credential store (`PasswordSafeSecretStore`). `LayeredSecrets` is the in-memory layer in front: the send path (UI thread) only reads memory; switching the environment loads its secrets on a pooled thread, writes go to the store in the background.
+- `HistoryLog` mirrors every line into the persisted history and keeps the JSON body of the newest `Limits.HISTORY_BODIES_KEPT` entries (at most `HISTORY_SPILLED_BODIES_KEPT` in a spill file, kept alive by a `ResponseBody.retain()` lease). Older entries say "body not kept". Bodies are never persisted.
+- The response on screen is owned by `RouteGenieClientService.responses` (`ResponseSlot`). `SendController` tells the viewers to let go (`Listener.releasing`) before it replaces or drops the response, so a spilled file is never deleted under a reader.
+- The JSON body goes to `JsonViewerPanel` (`ResponseJson` decides memory, spill file or cut); everything else, streams and failures keep the plain views.
+
+## Leak tests
+
+Weak-reference tests must not keep the object in a local variable of the test method: the interpreter keeps the locals of a running frame alive as GC roots, so the object looks leaked although nothing in the plugin holds it. Build the scenario in a separate function that returns only `WeakReference`s (see `WindowLeakTest`). The earlier finding "a disposed EndpointsPanel is not collected (about 250 KB per window)" was this effect: bisecting the panel (create, show, load, select, send, compare, environment editor) shows every part collectable, and 40 cycles of the whole window with endpoints grow the heap by less than the 3 MB limit.

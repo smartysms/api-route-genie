@@ -31,6 +31,9 @@
         <codeInsight.lineMarkerProvider language="Python"
                                         implementationClass="com.routegenie.ui.gutter.RouteLineMarkerProvider"/>
         <projectService serviceImplementation="com.routegenie.ui.gutter.RouteGutterIndex"/>
+        <projectService serviceImplementation="com.routegenie.ui.request.RequestWorkspace"/>
+        <projectService serviceImplementation="com.routegenie.clientide.RouteGenieClientState"/>
+        <projectService serviceImplementation="com.routegenie.clientide.RouteGenieClientService"/>
         <applicationService serviceImplementation="com.routegenie.settings.RouteGenieSettings"/>
         <applicationConfigurable parentId="tools" id="RouteGenie.Settings"
                                  instance="com.routegenie.settings.RouteGenieConfigurable"
@@ -57,5 +60,8 @@
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="GoToMenu" anchor="last"/>
         </action>
+        <action id="RouteGenie.SendRequest" class="com.routegenie.ui.request.SendRequestAction"
+                icon="/icons/routeGenie.svg"/>
+        <action id="RouteGenie.CopyAsCurl" class="com.routegenie.ui.request.CopyAsCurlAction"/>
     </actions>
 </idea-plugin>

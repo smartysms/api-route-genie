@@ -1,9 +1,10 @@
 package com.routegenie.ui.gutter
 
-import com.intellij.openapi.util.IconLoader
+import com.routegenie.ui.design.RouteGenieIcons
+import javax.swing.Icon
 
-/** The small dedicated marker; the platform picks routeGenieGutter_dark.svg in dark themes. */
+/** The small dedicated marker; the icon set owns the file, the platform picks routeGenieGutter_dark.svg in dark themes. */
 object GutterIcons {
     @JvmField
-    val ENDPOINT = IconLoader.getIcon("/icons/routeGenieGutter.svg", GutterIcons::class.java)
+    val ENDPOINT: Icon = RouteGenieIcons.GUTTER
 }

@@ -11,12 +11,21 @@ import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import com.routegenie.RouteGenieBundle
 import com.routegenie.model.Endpoint
+import com.routegenie.ui.design.BadgeState
+import com.routegenie.ui.design.Chip
+import com.routegenie.ui.design.DesignTokens
+import com.routegenie.ui.design.DesignTokens.Space
+import com.routegenie.ui.design.EmptyState
+import com.routegenie.ui.design.KeyValueGrid
+import com.routegenie.ui.design.KeyValueRow
+import com.routegenie.ui.design.MethodBadge
+import com.routegenie.ui.design.Palette
+import com.routegenie.ui.design.RouteGenieIcons
+import com.routegenie.ui.design.SectionHeader
 import java.awt.BorderLayout
-import java.awt.Font
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
+import java.awt.CardLayout
+import java.awt.FlowLayout
 import java.awt.datatransfer.StringSelection
-import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
 
@@ -35,9 +44,16 @@ interface EndpointDetailsSection {
 class EndpointDetailsPanel(project: Project) : JBPanel<EndpointDetailsPanel>(BorderLayout()) {
     private val sections = ArrayList<EndpointDetailsSection>()
     private var current: Endpoint? = null
+    private var tabs: JBTabbedPane? = null
 
     init {
         addSection(OverviewSection(project))
+    }
+
+    /** Brings [section] to the front when the area shows tabs. */
+    fun showSection(section: EndpointDetailsSection) {
+        val i = sections.indexOf(section)
+        if (i >= 0) tabs?.selectedIndex = i
     }
 
     fun addSection(section: EndpointDetailsSection) {
@@ -49,6 +65,7 @@ class EndpointDetailsPanel(project: Project) : JBPanel<EndpointDetailsPanel>(Bor
         } else {
             val tabs = JBTabbedPane()
             sections.forEach { tabs.addTab(it.title, it.component) }
+            this.tabs = tabs
             add(tabs, BorderLayout.CENTER)
         }
         revalidate()
@@ -65,106 +82,140 @@ class EndpointDetailsPanel(project: Project) : JBPanel<EndpointDetailsPanel>(Bor
 class OverviewSection(private val project: Project) : EndpointDetailsSection {
     override val title: String = RouteGenieBundle.message("details.overview")
 
-    private val header = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
-    private val badge = JBLabel()
-    private val handler = field()
-    private val framework = field()
-    private val params = field()
-    private val tags = field()
-    private val routeName = field()
-    private val source = ActionLink("") { current?.let { EndpointSourceNavigation.navigate(project, it.source) } }
-    private val rows = listOf(
-        row("details.handler", handler), row("details.framework", framework), row("details.parameters", params),
-        row("details.tags", tags), row("details.route_name", routeName), row("details.source", source),
-    )
-    private val navigate = JButton(RouteGenieBundle.message("action.navigate"), AllIcons.Actions.EditSource).apply {
-        toolTipText = RouteGenieBundle.message("action.navigate.tooltip")
-        addActionListener { current?.let { EndpointSourceNavigation.navigate(project, it.source) } }
-    }
-    private val copy = JButton(RouteGenieBundle.message("action.copy_path"), AllIcons.Actions.Copy).apply {
-        toolTipText = RouteGenieBundle.message("action.copy_path.tooltip")
-        addActionListener { current?.let { CopyPasteManager.getInstance().setContents(StringSelection(it.path)) } }
-    }
-    private val hint = JBLabel(RouteGenieBundle.message("details.none")).apply { foreground = JBUI.CurrentTheme.Label.disabledForeground() }
     private var current: Endpoint? = null
 
-    override val component: JComponent = JBScrollPane(buildContent()).apply { border = JBUI.Borders.empty() }
+    private val heading = JBLabel().apply {
+        font = DesignTokens.Type.title()
+        foreground = Palette.textPrimary
+        iconTextGap = JBUI.scale(Space.S)
+    }
+    private val deprecatedChip = Chip(RouteGenieBundle.message("endpoint.deprecated"), Palette.warning)
+    // HorizontalLayout puts the gap only between chips, so the first chip lines up with the other values.
+    private val tagChips = JPanel(com.intellij.ui.components.panels.HorizontalLayout(JBUI.scale(Space.XS))).apply { isOpaque = false }
 
-    private fun field() = JBLabel().apply { setCopyable(true) }
+    private val grid = KeyValueGrid()
+    private val handler = grid.addRow(RouteGenieBundle.message("details.handler"), KeyValueGrid.valueLabel(mono = true))
+    private val framework = grid.addRow(RouteGenieBundle.message("details.framework"))
+    private val params = grid.addRow(RouteGenieBundle.message("details.parameters"), KeyValueGrid.valueLabel(mono = true))
+    private val tags = grid.addRow(RouteGenieBundle.message("details.tags"), tagChips)
+    private val routeName = grid.addRow(RouteGenieBundle.message("details.route_name"), KeyValueGrid.valueLabel(mono = true))
+    private val sourceLink = ActionLink("") { navigate() }
+    private val source = grid.addRow(RouteGenieBundle.message("details.source"), sourceLink)
 
-    private class Row(val label: JBLabel, val value: JComponent)
+    private val navigateLink = ActionLink(RouteGenieBundle.message("action.navigate")) { navigate() }.apply {
+        icon = AllIcons.Actions.EditSource
+        toolTipText = RouteGenieBundle.message("action.navigate.tooltip")
+    }
+    /** Icon only, at the end of the title row: copying the path is the one action tied to the title itself. */
+    private val copyLink = ActionLink("") {
+        current?.let { CopyPasteManager.getInstance().setContents(StringSelection(it.path)) }
+    }.apply {
+        icon = RouteGenieIcons.COPY
+        toolTipText = RouteGenieBundle.message("action.copy_path.tooltip")
+    }
 
-    private fun row(key: String, value: JComponent) = Row(JBLabel(RouteGenieBundle.message(key)).apply {
-        foreground = JBUI.CurrentTheme.Label.disabledForeground()
-    }, value)
+    private val cards = CardLayout()
+    private val root = JPanel(cards).apply {
+        isOpaque = true
+        background = Palette.surface
+    }
 
+    override val component: JComponent = root
+
+    init {
+        root.add(EmptyState(RouteGenieIcons.EMPTY_ROUTES, RouteGenieBundle.message("details.none")), CARD_NONE)
+        root.add(JBScrollPane(buildContent()).apply {
+            border = JBUI.Borders.empty()
+            viewport.isOpaque = true
+            viewport.background = Palette.surface
+        }, CARD_DETAILS)
+        cards.show(root, CARD_NONE)
+    }
+
+    /**
+     * Title row (verb badge, path, copy), then a captioned block of facts, then the one navigation action. Horizontal insets
+     * are [Space.M] everywhere so the section header, the facts and the actions share one left edge; vertical gaps step
+     * M (title to header), S (inside the facts) and L (facts to action).
+     */
     private fun buildContent(): JComponent {
-        val panel = JPanel(GridBagLayout())
-        panel.border = JBUI.Borders.empty(UiMetrics.GAP, UiMetrics.GAP * 2)
-        val gap = JBUI.scale(UiMetrics.GAP)
-        var y = 0
-        fun add(c: JComponent, x: Int, width: Int, weightX: Double, top: Int = 0) {
-            panel.add(c, GridBagConstraints().apply {
-                gridx = x; gridy = y; gridwidth = width; weightx = weightX; fill = GridBagConstraints.HORIZONTAL
-                anchor = GridBagConstraints.NORTHWEST; insets = JBUI.insets(top, 0, 0, if (x == 0 && width == 1) gap * 2 else 0)
-            })
-        }
-        add(hint, 0, 2, 1.0)
-        y++
-        val head = JPanel(BorderLayout(gap, 0)).apply { isOpaque = false; add(badge, BorderLayout.WEST); add(header, BorderLayout.CENTER) }
-        add(head, 0, 2, 1.0)
-        y++
-        for (r in rows) {
-            add(r.label, 0, 1, 0.0, gap)
-            add(r.value, 1, 1, 1.0, gap)
-            y++
-        }
-        val buttons = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0)).apply {
+        val trailing = JPanel(com.intellij.ui.components.panels.HorizontalLayout(JBUI.scale(Space.S))).apply {
             isOpaque = false
-            add(navigate)
-            add(javax.swing.Box.createHorizontalStrut(gap))
-            add(copy)
+            add(deprecatedChip.also { it.isVisible = false })
+            add(copyLink)
         }
-        add(buttons, 0, 2, 1.0, gap * 2)
-        y++
-        panel.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply { gridx = 0; gridy = y; weighty = 1.0; fill = GridBagConstraints.VERTICAL })
-        showEndpoint(null, panel)
-        return panel
+        val head = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(heading, BorderLayout.CENTER)
+            add(trailing, BorderLayout.EAST)
+            border = Space.border(Space.M, Space.M, Space.M, Space.M)
+        }
+        val facts = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = Space.border(Space.S, Space.M, 0, Space.M)
+            add(grid, BorderLayout.CENTER)
+        }
+        val actions = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            add(navigateLink)
+            border = Space.border(Space.L, Space.M, Space.L, Space.M)
+        }
+        val column = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(head, BorderLayout.NORTH)
+            add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(SectionHeader(RouteGenieBundle.message("details.section")), BorderLayout.NORTH)
+                add(facts, BorderLayout.CENTER)
+            }, BorderLayout.CENTER)
+            add(actions, BorderLayout.SOUTH)
+        }
+        return JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = Palette.surface
+            add(column, BorderLayout.NORTH)
+        }
+    }
+
+    private fun navigate() {
+        current?.let { EndpointSourceNavigation.navigate(project, it.source) }
     }
 
     override fun show(endpoint: Endpoint?) {
-        showEndpoint(endpoint, null)
+        current = endpoint
+        if (endpoint == null) {
+            cards.show(root, CARD_NONE)
+            return
+        }
+        heading.icon = MethodBadge.of(endpoint.method, BadgeState.NORMAL)
+        heading.text = endpoint.path
+        heading.toolTipText = endpoint.path
+        deprecatedChip.isVisible = endpoint.deprecated
+
+        handler.valueLabel().text = endpoint.handler.qualifiedName
+        framework.valueLabel().text = endpoint.framework.displayName
+        val paramText = endpoint.pathParams.joinToString(", ") { p -> if (p.type == null) p.name else "${p.name}: ${p.type}" }
+        params.valueLabel().text = paramText
+        params.isVisible = paramText.isNotEmpty()
+
+        tagChips.removeAll()
+        endpoint.tags.forEach { tagChips.add(Chip(it)) }
+        tags.isVisible = endpoint.tags.isNotEmpty()
+        tagChips.invalidate()
+        root.revalidate()
+        root.repaint()
+
+        val name = endpoint.routeName.orEmpty()
+        routeName.valueLabel().text = name
+        routeName.isVisible = name.isNotEmpty()
+        sourceLink.text = endpoint.source.toString()
+        source.isVisible = true
+        cards.show(root, CARD_DETAILS)
     }
 
-    private fun showEndpoint(endpoint: Endpoint?, panel: JPanel?) {
-        current = endpoint
-        val has = endpoint != null
-        hint.isVisible = !has
-        header.isVisible = has
-        badge.isVisible = has
-        navigate.isEnabled = has
-        copy.isEnabled = has
-        if (endpoint != null) {
-            badge.icon = MethodBadge.of(endpoint.method)
-            header.text = endpoint.path
-            header.toolTipText = endpoint.path
-            handler.text = endpoint.handler.qualifiedName
-            framework.text = endpoint.framework.displayName
-            params.text = endpoint.pathParams.joinToString(", ") { p -> if (p.type == null) p.name else "${p.name}: ${p.type}" }
-            tags.text = endpoint.tags.joinToString(", ")
-            routeName.text = endpoint.routeName.orEmpty()
-            source.text = endpoint.source.toString()
-        }
-        for (r in rows) {
-            val visible = has && when (r.value) {
-                params -> params.text.isNotEmpty()
-                tags -> tags.text.isNotEmpty()
-                routeName -> routeName.text.isNotEmpty()
-                else -> true
-            }
-            r.label.isVisible = visible
-            r.value.isVisible = visible
-        }
-        panel?.revalidate()
+    private fun KeyValueRow.valueLabel(): JBLabel = value as JBLabel
+
+    private companion object {
+        const val CARD_NONE = "none"
+        const val CARD_DETAILS = "details"
     }
 }

@@ -1,0 +1,12 @@
+# One line per endpoint: METHOD path | content type | generated body (JSON compacted), or ABSENT when the code declares none.
+GET /health | ABSENT
+GET /items/ | ABSENT
+POST /items/ | application/json | {"name":"string","price":1,"category":"book","tags":[],"dimensions":{"width":0,"height":0,"unit":"cm"},"note":null}
+PUT /items/{item_id} | application/json | {"name":"string","price":1,"category":"book","tags":[],"dimensions":{"width":0,"height":0,"unit":"cm"},"note":null}
+PATCH /items/{item_id} | application/json | {"name":null,"price":null}
+POST /items/bulk | application/json | [{"name":"string","price":1,"category":"book","tags":[],"dimensions":{"width":0,"height":0,"unit":"cm"},"note":null}]
+DELETE /items/{item_id} | ABSENT
+POST /users/ | application/json | {"userId":0,"email":"string","nickname":"anon"}
+POST /users/tree | application/json | {"value":0,"children":[]}
+POST /upload | ABSENT
+POST /login | application/x-www-form-urlencoded | username=string&password=string

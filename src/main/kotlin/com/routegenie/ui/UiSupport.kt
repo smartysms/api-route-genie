@@ -35,14 +35,6 @@ object EndpointDataKeys {
     val SELECTED_ENDPOINT: DataKey<Endpoint> = DataKey.create("RouteGenie.SelectedEndpoint")
 }
 
-/** Pixel sizes of the window; scaled with JBUI where used. */
-internal object UiMetrics {
-    const val BADGE_WIDTH = 48
-    const val BADGE_HEIGHT = 16
-    const val BADGE_ARC = 6
-    const val GAP = 6
-}
-
 /**
  * Resolves a project-relative source position and opens it. Runs on the UI thread, where the platform no longer grants
  * read access implicitly, so every read of the project model or of a document takes its own read action.

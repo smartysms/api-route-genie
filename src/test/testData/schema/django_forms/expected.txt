@@ -1,0 +1,16 @@
+# One line per endpoint: METHOD path | content type | generated body, or ABSENT when the code declares none.
+GET /contact/ | ABSENT
+POST /contact/ | application/x-www-form-urlencoded | email=user%40example.com&message=string&age=18&topics=a
+PUT /contact/ | application/x-www-form-urlencoded | email=user%40example.com&message=string&age=18&topics=a
+GET /upload/ | ABSENT
+POST /upload/ | ABSENT
+PUT /upload/ | ABSENT
+GET /products/new/ | ABSENT
+POST /products/new/ | application/x-www-form-urlencoded | name=string&description=string&price=0&in_stock=true&category=0
+PUT /products/new/ | application/x-www-form-urlencoded | name=string&description=string&price=0&in_stock=true&category=0
+GET /categories/new/ | ABSENT
+POST /categories/new/ | application/x-www-form-urlencoded | name=string
+PUT /categories/new/ | application/x-www-form-urlencoded | name=string
+POST /plain/ | ABSENT
+POST /subscribe/ | application/x-www-form-urlencoded | email=user%40example.com&message=string&age=18&topics=a
+POST /raw/ | ABSENT

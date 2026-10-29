@@ -29,18 +29,26 @@ import com.intellij.ui.SearchTextField
 import com.intellij.ui.TreeSpeedSearch
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
-import com.intellij.ui.components.JBPanelWithEmptyText
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
-import com.intellij.util.ui.AsyncProcessIcon
+import com.routegenie.Ids
 import com.routegenie.Limits
 import com.routegenie.RouteGenieBundle
 import com.routegenie.discovery.core.RouteDiscoveryService
 import com.routegenie.model.Endpoint
 import com.routegenie.model.RouteSnapshot
+import com.routegenie.ui.design.DesignTokens
+import com.routegenie.ui.design.DesignTokens.Space
+import com.routegenie.ui.design.Divider
+import com.routegenie.ui.design.EmptyState
+import com.routegenie.ui.design.LoadingState
+import com.routegenie.ui.design.Palette
+import com.routegenie.ui.design.RouteGenieIcons
+import com.routegenie.ui.design.ToolbarStyle
 import com.routegenie.ui.gutter.RouteGutterIndex
 import com.routegenie.ui.model.EndpointIndex
+import com.routegenie.ui.request.RequestSection
 import com.routegenie.ui.model.EndpointQuery
 import com.routegenie.ui.model.EndpointTree
 import com.routegenie.ui.model.Group
@@ -61,11 +69,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import java.awt.CardLayout
-import java.awt.GridBagLayout
 import java.awt.event.HierarchyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.datatransfer.StringSelection
+import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
@@ -125,8 +133,14 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
     internal val searchField = SearchTextField(false)
     internal val details = EndpointDetailsPanel(project)
     private val status = JBLabel().apply {
-        foreground = JBUI.CurrentTheme.Label.disabledForeground()
-        border = JBUI.Borders.empty(JBUI.scale(2), JBUI.scale(UiMetrics.GAP))
+        font = DesignTokens.Type.caption()
+        foreground = Palette.textSecondary
+    }
+    private val statusBar = JPanel(BorderLayout()).apply {
+        isOpaque = true
+        background = Palette.raised
+        border = JBUI.Borders.merge(Space.border(Space.XS, Space.M), Divider.top(), true)
+        add(status, BorderLayout.WEST)
     }
     private val cardLayout = CardLayout()
     private val cards = JPanel(cardLayout)
@@ -138,16 +152,22 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
         override fun isCopyVisible(dataContext: DataContext): Boolean = true
     }
 
+    private lateinit var topBar: JComponent
+    private lateinit var listSplitter: OnePixelSplitter
+
     init {
         Disposer.register(parent, this)
         buildCards()
-        add(buildTop(), BorderLayout.NORTH)
+        topBar = buildTop()
+        add(topBar, BorderLayout.NORTH)
         val splitter = OnePixelSplitter(true, UiKeys.SPLITTER, Limits.DETAILS_SPLIT_PROPORTION).apply {
             firstComponent = cards
             secondComponent = details
         }
+        listSplitter = splitter
         add(splitter, BorderLayout.CENTER)
-        add(status, BorderLayout.SOUTH)
+        registerRequestSection()
+        add(statusBar, BorderLayout.SOUTH)
         wireTree()
         showCard(CARD_LOADING)
 
@@ -170,22 +190,14 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
     private fun msg(key: String, vararg args: Any) = RouteGenieBundle.message(key, *args)
 
     private fun buildCards() {
-        cards.add(JBScrollPane(tree), CARD_TREE)
-        val loading = JPanel(GridBagLayout()).apply {
-            val icon = AsyncProcessIcon("loading")
-            Disposer.register(this@EndpointsPanel, icon)
-            add(JPanel(java.awt.FlowLayout(java.awt.FlowLayout.CENTER, JBUI.scale(UiMetrics.GAP), 0)).apply {
-                add(icon)
-                add(JBLabel(msg("progress.scanning")))
-            })
-        }
-        cards.add(loading, CARD_LOADING)
-        cards.add(JBPanelWithEmptyText().withEmptyText(msg("window.empty")).also { it.emptyText.appendLine(msg("state.empty.hint")) }, CARD_EMPTY)
-        cards.add(JBPanelWithEmptyText().withEmptyText(msg("state.no_match")).also { it.emptyText.appendLine(msg("state.no_match.hint")) }, CARD_NO_MATCH)
-        cards.add(JBPanelWithEmptyText().withEmptyText(msg("state.no_python")).also { it.emptyText.appendLine(msg("state.no_python.hint")) }, CARD_NO_PYTHON)
+        cards.add(JBScrollPane(tree).apply { border = JBUI.Borders.empty() }, CARD_TREE)
+        cards.add(LoadingState(this, msg("progress.scanning")), CARD_LOADING)
+        cards.add(EmptyState(RouteGenieIcons.EMPTY_ROUTES, msg("window.empty"), msg("state.empty.hint")), CARD_EMPTY)
+        cards.add(EmptyState(RouteGenieIcons.EMPTY_SEARCH, msg("state.no_match"), msg("state.no_match.hint")), CARD_NO_MATCH)
+        cards.add(EmptyState(RouteGenieIcons.EMPTY_PROJECT, msg("state.no_python"), msg("state.no_python.hint")), CARD_NO_PYTHON)
     }
 
-    private fun buildTop(): JPanel {
+    private fun buildTop(): JComponent {
         val group = DefaultActionGroup().apply {
             add(UiAction(msg("toolbar.refresh"), msg("toolbar.refresh.tooltip"), AllIcons.Actions.Refresh) { service.requestRefresh() })
             addSeparator()
@@ -201,8 +213,7 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
             add(UiToggle(msg("toolbar.show_deprecated"), msg("toolbar.show_deprecated.tooltip"), AllIcons.General.Filter,
                 { params.value.includeDeprecated }, { setIncludeDeprecated(it) }))
         }
-        val toolbar = ActionManager.getInstance().createActionToolbar(UiKeys.TOOLBAR_PLACE, group, true)
-        toolbar.targetComponent = this
+        val toolbar = ToolbarStyle.create(UiKeys.TOOLBAR_PLACE, group, this)
 
         searchField.textEditor.toolTipText = msg("query.tooltip", QueryKeys.ALL.joinToString(", ") { "$it:" })
         (searchField.textEditor as? JBTextField)?.emptyText?.text = msg("query.placeholder")
@@ -212,11 +223,28 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
                 params.update { it.copy(query = text) }
             }
         })
-        return JPanel(BorderLayout()).apply {
-            add(toolbar.component, BorderLayout.WEST)
-            add(searchField, BorderLayout.CENTER)
-            border = JBUI.Borders.empty(JBUI.scale(2))
+        // The syntax help does not fit the box, so it sits in the tooltip and, while the empty box has focus, in a line below it.
+        val hint = JBLabel(msg("query.hint", QueryKeys.ALL.joinToString(", ") { "$it:" })).apply {
+            font = DesignTokens.Type.caption()
+            foreground = Palette.textSecondary
+            border = Space.border(Space.XS, Space.XS, 0, 0)
+            isVisible = false
         }
+        fun updateHint() { hint.isVisible = searchField.textEditor.hasFocus() && searchField.text.isEmpty() }
+        searchField.textEditor.addFocusListener(object : java.awt.event.FocusAdapter() {
+            override fun focusGained(e: java.awt.event.FocusEvent) = updateHint()
+            override fun focusLost(e: java.awt.event.FocusEvent) = updateHint()
+        })
+        searchField.addDocumentListener(object : DocumentAdapter() {
+            override fun textChanged(e: DocumentEvent) = updateHint()
+        })
+        val filter = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = Space.border(0, Space.S, 0, 0)
+            add(searchField, BorderLayout.CENTER)
+            add(hint, BorderLayout.SOUTH)
+        }
+        return ToolbarStyle.bar(toolbar, filter)
     }
 
     private fun wireTree() {
@@ -239,6 +267,9 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
         val popup = DefaultActionGroup().apply {
             add(UiAction(msg("action.navigate"), msg("action.navigate.tooltip"), AllIcons.Actions.EditSource, { selectedEndpoint != null }) { navigateSelected() })
             add(UiAction(msg("action.copy_path"), msg("action.copy_path.tooltip"), AllIcons.Actions.Copy, { selectedEndpoint != null }) { copyPath() })
+            addSeparator()
+            ActionManager.getInstance().getAction(Ids.ACTION_SEND_REQUEST)?.let { add(it) }
+            ActionManager.getInstance().getAction(Ids.ACTION_COPY_CURL)?.let { add(it) }
         }
         // Own handler instead of PopupHandler.installPopupMenu: that one creates a popup menu registered with the application
         // up front, which kept every closed window's tree alive. A menu is created per click and owned by the platform.
@@ -262,6 +293,20 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
     private fun setIncludeDeprecated(value: Boolean) {
         props.setValue(UiKeys.PROP_SHOW_DEPRECATED, value, true)
         params.update { it.copy(includeDeprecated = value) }
+    }
+
+    /** Adds the Request page (request form, response, cURL, history) to the details area. */
+    private fun registerRequestSection() {
+        val section = RequestSection(project, this, ::setListVisible)
+        section.revealSelf = { details.showSection(section) }
+        details.addSection(section)
+    }
+
+    /** Hides or shows the filter bar and the list so the details area (the request workspace) gets the whole window. */
+    internal fun setListVisible(visible: Boolean) {
+        topBar.isVisible = visible
+        listSplitter.firstComponent = if (visible) cards else null
+        listSplitter.revalidate()
     }
 
     private fun navigateSelected() {
@@ -369,7 +414,8 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
                 val expanded = if (previous == null) emptySet() else expandedKeys()
                 currentTree = view.tree
                 tree.model = EndpointTreeModel(view.tree.root)
-                val reset = previous == null || previous.params != view.params
+                // The first real snapshot after the scanning page counts as a fresh start too, or a small project would open collapsed.
+                val reset = previous == null || previous.snapshot.generation == 0L || previous.params != view.params
                 if (reset && view.tree.count <= Limits.AUTO_EXPAND_MAX_ENDPOINTS) expandGroups(view.tree) { true }
                 else expandGroups(view.tree) { it.key in expanded }
                 keepKey?.let { view.tree.findLeaf(it) }?.let { select(it) }

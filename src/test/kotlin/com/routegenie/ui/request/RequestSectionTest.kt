@@ -1,0 +1,225 @@
+package com.routegenie.ui.request
+
+import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.routegenie.Limits
+import com.routegenie.client.BodyTemplate
+import com.routegenie.client.BodyTemplateSource
+import com.routegenie.client.ResponseMode
+import com.routegenie.client.StreamEvent
+import com.routegenie.client.StreamSummary
+import com.routegenie.client.curl.CurlShell
+import com.routegenie.model.HttpMethod
+import com.routegenie.model.PathParam
+import com.routegenie.testing.PerfBudget
+import com.routegenie.testing.PlatformLeaks
+
+/** Panel construction and state handling with a FAKE engine: no network, nothing sent unless the test presses Send. */
+class RequestSectionTest : BasePlatformTestCase() {
+    private val engine = FakeEngine()
+    private val ui = ManualUi()
+    private var template: BodyTemplate? = null
+    private val templates = BodyTemplateSource { template }
+
+    private val state = com.routegenie.clientide.RouteGenieClientState()
+    private val store = MapSecretStore()
+
+    private fun section(owner: com.intellij.openapi.Disposable) = RequestSection(
+        project, owner, engine = { engine }, bodyTemplates = { templates }, ui = ui,
+        state = state, secretStore = store, secretExecutor = directExecutor, responses = com.routegenie.client.ResponseSlot(),
+    )
+
+    private fun owner() = Disposer.newDisposable("request section test")
+
+    fun testAnyEndpointShowsTheMethodDropdownAndFixedOnesDoNot() {
+        val owner = owner()
+        try {
+            val s = section(owner)
+            s.show(endpoint(HttpMethod.ANY, "/ping", emptyList()))
+            assertTrue(s.formForTest().methodComboVisible())
+            assertEquals(HttpMethod.GET, s.currentForm()!!.method)
+            s.show(endpoint(HttpMethod.PUT))
+            assertFalse(s.formForTest().methodComboVisible())
+            assertEquals(HttpMethod.PUT, s.currentForm()!!.method)
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testBodyEditorIsTheVisibleCardForJsonAndTextAndHiddenForNone() {
+        val owner = owner()
+        try {
+            val s = section(owner)
+            s.show(endpoint(HttpMethod.POST, "/items", emptyList()))
+            val form = s.formForTest()
+            form.selectFormTabForTest("Body")
+            assertFalse("no body: the editor is hidden", form.bodyEditorIsOnScreen())
+            for (kind in listOf(BodyType.JSON, BodyType.TEXT)) {
+                s.currentForm()!!.bodyKind = kind
+                form.refresh(null)
+                assertTrue("$kind shows the editor", form.bodyEditorIsOnScreen())
+            }
+            s.currentForm()!!.bodyKind = BodyType.FORM
+            form.refresh(null)
+            assertFalse(form.bodyEditorIsOnScreen())
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testValidationErrorsBlockSendAndAreShownInline() {
+        val owner = owner()
+        try {
+            val s = section(owner)
+            s.show(endpoint(HttpMethod.GET, "/users/{user_id}", listOf(PathParam("user_id", "int"))))
+            s.currentForm()!!.pathValues["user_id"] = "abc"
+            val r = s.send()
+            assertTrue(r is SendResult.Invalid)
+            assertEquals(0, engine.streams)
+            assertNotNull(s.formForTest().pathErrorText("user_id"))
+            assertTrue(s.sendButton().isEnabled)
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testRunningDisablesSendAndShowsCancelAndTheStreamIsLive() {
+        val owner = owner()
+        try {
+            val s = section(owner)
+            s.show(endpoint(HttpMethod.GET, "/events", emptyList()))
+            assertTrue(s.send() is SendResult.Started)
+            assertFalse(s.sendButton().isEnabled)
+            assertTrue(s.cancelButton().isVisible)
+            engine.emit(
+                StreamEvent.HeadersReceived(200, "OK", listOf("content-type" to "text/event-stream"), "HTTP/1.1", ResponseMode.SSE, "http://127.0.0.1:8000/events"),
+                StreamEvent.SseEvent("1", "tick", "{\"n\":1}", null),
+                StreamEvent.SseEvent("2", "tick", "{\"n\":2}", null),
+            )
+            ui.runPending()
+            val r = s.responseForTest()
+            assertTrue(r.tabTitles().contains("Events"))
+            assertEquals(2, r.eventsForTest().rowCount)
+            assertTrue(r.viewerForTest().text.contains("data: {\"n\":2}"))
+            s.controller.cancel()
+            while (ui.pending.isNotEmpty() && s.controller.state.running) ui.runPending()
+            assertTrue(s.sendButton().isEnabled)
+            assertFalse(s.cancelButton().isVisible)
+            assertEquals(1, r.historyCount())
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testGenerateBodyAsksBeforeOverwritingAndExplainsWhenThereIsNoTemplate() {
+        val owner = owner()
+        try {
+            val s = section(owner)
+            s.show(endpoint(HttpMethod.POST, "/items", emptyList()))
+            val form = s.formForTest()
+            template = null
+            form.generateBody()
+            waitFor { form.generateNoteText() != null }
+            assertEquals("", form.bodyTextForTest())
+
+            template = BodyTemplate("application/json", "{\"name\": \"\"}")
+            form.generateBody()
+            waitFor { form.bodyTextForTest().isNotEmpty() }
+            assertEquals("{\"name\": \"\"}", form.bodyTextForTest())
+            assertEquals(BodyType.JSON, s.currentForm()!!.bodyKind)
+
+            // Now the editor holds text: nothing is replaced until the user confirms.
+            template = BodyTemplate("application/json", "{\"other\": 1}")
+            s.currentForm()!!.bodyText = "{\"mine\": true}"
+            form.refresh(null)
+            form.generateBody()
+            waitFor { form.replaceBarVisible() }
+            assertEquals("{\"mine\": true}", form.bodyTextForTest())
+            form.confirmReplaceForTest()
+            assertEquals("{\"other\": 1}", form.bodyTextForTest())
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testCurlViewFollowsTheFormAndTheShellChoice() {
+        val owner = owner()
+        try {
+            val s = section(owner)
+            s.show(endpoint(HttpMethod.POST, "/items", emptyList()))
+            s.currentForm()!!.apply { bodyKind = BodyType.JSON; bodyText = "{\"a\":1}" }
+            val r = s.responseForTest()
+            r.setShellForTest(CurlShell.BASH)
+            assertTrue(r.curlTextForTest(), r.curlTextForTest().contains("-X POST"))
+            r.setShellForTest(CurlShell.CMD)
+            assertTrue(r.curlTextForTest().startsWith("curl.exe"))
+            r.importForTest("curl -X PUT 'http://localhost:9000/items' -H 'X-A: 1' -d x=1")
+            assertEquals(HttpMethod.PUT, s.currentForm()!!.method.takeIf { s.currentForm()!!.methodIsChoosable } ?: HttpMethod.PUT)
+            assertTrue(r.importResultText(), r.importResultText().isNotEmpty())
+            r.importForTest("wget http://x")
+            assertTrue(r.importResultText().isNotEmpty())
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testLayoutFollowsTheShapeOfTheWindow() {
+        val owner = owner()
+        try {
+            val s = section(owner)
+            s.component.setSize(Limits.WORKSPACE_SIDE_BY_SIDE_MIN_WIDTH * 2, 600)
+            s.applyOrientation()
+            assertFalse("wide window puts the response beside the request", s.splitterVertical())
+            s.component.setSize(Limits.WORKSPACE_SIDE_BY_SIDE_MIN_WIDTH / 2, 600)
+            s.applyOrientation()
+            assertTrue(s.splitterVertical())
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testCreatingTheSectionIsWithinTheWindowOpenBudget() {
+        PerfBudget.assertWithin("request-section-create", Limits.BUDGET_WINDOW_OPEN_MS, warmups = 3, runs = 7) {
+            val owner = owner()
+            section(owner)
+            Disposer.dispose(owner)
+        }
+    }
+
+    // ---- leaks -------------------------------------------------------------------------------------------------
+
+    fun testCreateAndDisposeLeavesNoEditorAndNoDisposedProjectReachable() {
+        PlatformLeaks.assertScenarioClean("request section create/dispose") {
+            repeat(5) {
+                val owner = owner()
+                val s = section(owner)
+                s.show(endpoint(HttpMethod.POST, "/items", emptyList()))
+                s.responseForTest().viewerForTest().showText("x", "json", true, false)
+                Disposer.dispose(owner)
+            }
+        }
+    }
+
+    fun testDisposingMidStreamCancelsTheCallAndReleasesTheViewer() {
+        val before = EditorFactory.getInstance().allEditors.toSet()
+        val owner = owner()
+        val s = section(owner)
+        s.show(endpoint(HttpMethod.GET, "/events", emptyList()))
+        assertTrue(s.send() is SendResult.Started)
+        engine.emit(StreamEvent.HeadersReceived(200, "OK", listOf("content-type" to "text/plain"), "HTTP/1.1", ResponseMode.RAW_STREAM, "u"))
+        engine.emit(StreamEvent.Line("hello"))
+        ui.runPending()
+        Disposer.dispose(owner)
+        assertTrue("the call is cancelled when the panel goes", engine.cancelled)
+        engine.emit(StreamEvent.Line("late"))
+        engine.emit(StreamEvent.Completed(StreamSummary(1, 1, 1)))
+        ui.runPending()
+        assertTrue(EditorFactory.getInstance().allEditors.none { it !in before })
+        PlatformLeaks.assertNoDisposedEditorReachable("after dispose mid-stream")
+    }
+
+    fun testAStoppedStreamLeavesNothingBehind() {
+        PlatformLeaks.assertScenarioClean("stopped stream") {
+            val owner = owner()
+            val s = section(owner)
+            s.show(endpoint(HttpMethod.GET, "/events", emptyList()))
+            s.send()
+            engine.emit(StreamEvent.HeadersReceived(200, "OK", listOf("content-type" to "text/plain"), "HTTP/1.1", ResponseMode.RAW_STREAM, "u"))
+            repeat(50) { engine.emit(StreamEvent.Line("line $it")) }
+            ui.runPending()
+            s.controller.cancel()
+            while (ui.pending.isNotEmpty() && s.controller.state.running) ui.runPending()
+            Disposer.dispose(owner)
+        }
+    }
+
+    private fun waitFor(condition: () -> Boolean) = PlatformTestUtil.waitWithEventsDispatching("timed out", condition, 30)
+}

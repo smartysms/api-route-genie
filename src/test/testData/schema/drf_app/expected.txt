@@ -1,0 +1,12 @@
+# One line per endpoint: METHOD path | content type | generated body (JSON compacted), or ABSENT when the code declares none.
+POST /api/authors/ | application/json | {"name":"string","bio":"string"}
+POST /api/login/ | application/json | {"username":"string","password":"string"}
+POST /api/raw/ | ABSENT
+GET /api/books/ | ABSENT
+POST /api/books/ | application/json | {"title":"string","isbn":"a","pages":1,"book_format":"print","author":0,"publisher":"123e4567-e89b-12d3-a456-426614174000","reviews":["string"]}
+GET /api/books/{pk}/ | ABSENT
+PUT /api/books/{pk}/ | application/json | {"title":"string","isbn":"a","pages":1,"book_format":"print","author":0,"publisher":"123e4567-e89b-12d3-a456-426614174000","reviews":["string"]}
+PATCH /api/books/{pk}/ | application/json | {"title":"string","isbn":"a","pages":1,"book_format":"print","author":0,"publisher":"123e4567-e89b-12d3-a456-426614174000","reviews":["string"]}
+DELETE /api/books/{pk}/ | ABSENT
+POST /api/books/{pk}/reset/ | application/json | {"confirm":true,"reason":""}
+GET /api/ | ABSENT

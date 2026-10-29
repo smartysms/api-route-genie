@@ -1,0 +1,6 @@
+# One line per endpoint: METHOD path | content type | generated body (JSON compacted), or ABSENT when the code declares none.
+POST /api/items | application/json | {"name":"string","qty":1}
+POST /api/plain | ABSENT
+PUT /api/form | ABSENT
+GET /users/ | ABSENT
+POST /users/ | ABSENT
