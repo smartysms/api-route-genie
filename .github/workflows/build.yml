@@ -12,12 +12,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 25
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
       - name: Build, test and package
         shell: bash
         # The init script makes Gradle print the message and stack of every failed test, not only its name.
@@ -64,7 +64,7 @@ jobs:
           } > failure.md
           head -c 60000 failure.md > failure-short.md
           gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@failure-short.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: plugin-zip
           path: build/distributions/*.zip
