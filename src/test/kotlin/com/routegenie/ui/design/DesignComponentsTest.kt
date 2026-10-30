@@ -162,9 +162,10 @@ class DesignComponentsTest : BasePlatformTestCase() {
             RouteGenieIcons.PRETTY_PRINT, RouteGenieIcons.WRAP, RouteGenieIcons.SEARCH, RouteGenieIcons.PLUGIN,
         )
         icons.forEach { assertEquals(it.toString(), it.iconWidth, it.iconHeight) }
+        val small = icons.first().iconWidth
         listOf(RouteGenieIcons.EMPTY_ROUTES, RouteGenieIcons.EMPTY_SEARCH, RouteGenieIcons.EMPTY_PROJECT).forEach {
-            assertTrue(it.iconWidth > icons.first().iconWidth)
+            assertTrue("$it is ${it.iconWidth} wide, the small icons are $small", it.iconWidth > small)
         }
-        assertTrue(RouteGenieIcons.GUTTER.iconWidth < icons.first().iconWidth)
+        assertTrue("gutter icon is ${RouteGenieIcons.GUTTER.iconWidth} wide, the small icons are $small", RouteGenieIcons.GUTTER.iconWidth < small)
     }
 }

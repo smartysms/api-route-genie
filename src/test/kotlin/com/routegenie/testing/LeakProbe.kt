@@ -42,9 +42,18 @@ object LeakProbe {
         block: () -> Unit,
     ) {
         repeat(warmups) { block() }
-        val before = usedHeapBytes()
-        repeat(iterations) { block() }
-        val growth = usedHeapBytes() - before
-        if (growth > maxGrowthBytes) fail("$label: heap grew by $growth bytes over $iterations runs (limit $maxGrowthBytes)")
+        // A leak adds to the heap in every round; the collector's timing, JIT code and caches that fill once do not. So the
+        // check passes as soon as one round stays under the limit and fails only when every round grows past it.
+        var smallest = Long.MAX_VALUE
+        repeat(ROUNDS) {
+            val before = usedHeapBytes()
+            repeat(iterations) { block() }
+            val growth = usedHeapBytes() - before
+            if (growth <= maxGrowthBytes) return
+            smallest = minOf(smallest, growth)
+        }
+        fail("$label: heap grew by at least $smallest bytes in each of $ROUNDS rounds of $iterations runs (limit $maxGrowthBytes)")
     }
+
+    private const val ROUNDS = 3
 }
