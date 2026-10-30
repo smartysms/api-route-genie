@@ -11,6 +11,7 @@ import com.routegenie.Branding
 import com.routegenie.Ids
 import com.routegenie.RouteGenieBundle
 import com.routegenie.ui.gutter.RouteGutterIndex
+import com.routegenie.ui.pins.PinsDialog
 
 /** Settings | Tools | <product>. Applying refreshes the markers of every open project, no restart needed. */
 class RouteGenieConfigurable : BoundSearchableConfigurable(Branding.NAME, "", Ids.CONFIGURABLE) {
@@ -25,6 +26,11 @@ class RouteGenieConfigurable : BoundSearchableConfigurable(Branding.NAME, "", Id
                 comboBox(BodyFillMode.entries, SimpleListCellRenderer.create("") { RouteGenieBundle.message(it.bundleKey) })
                     .bindItem({ settings.bodyFillMode }, { settings.bodyFillMode = it ?: BodyFillMode.SAMPLE })
                     .comment(RouteGenieBundle.message("settings.fill.comment"))
+            }
+            row {
+                link(RouteGenieBundle.message("settings.pins.link")) {
+                    ProjectManager.getInstance().openProjects.firstOrNull { !it.isDisposed }?.let { PinsDialog(it).show() }
+                }.comment(RouteGenieBundle.message("settings.pins.comment"))
             }
             if (RouteGenieSettings.isPaidPythonActive()) {
                 row { comment(RouteGenieBundle.message("settings.gutter.proNote")) }

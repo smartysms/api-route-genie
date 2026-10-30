@@ -5,6 +5,10 @@ import com.routegenie.discovery.FileFacts
 import com.routegenie.discovery.LinkResult
 import com.routegenie.discovery.core.Expr
 import com.routegenie.discovery.core.ExprEvaluator
+import com.routegenie.discovery.core.PinEnv
+import com.routegenie.discovery.core.SettingTally
+import com.routegenie.discovery.core.SettingsCollector
+import com.routegenie.discovery.core.SettingsContext
 import com.routegenie.discovery.core.ModuleNames
 import com.routegenie.discovery.core.ModuleTable
 import com.routegenie.model.Diagnostic
@@ -30,7 +34,7 @@ class DjangoLinker(private val options: Options = Options()) {
      */
     data class Options(val emitFormatSuffixVariants: Boolean = false)
 
-    fun link(facts: Collection<FileFacts>): LinkResult = Run(DjangoResolver.files(facts), options).execute()
+    fun link(facts: Collection<FileFacts>): LinkResult = Run(DjangoResolver.files(facts), options, PinEnv.of(facts)).execute()
 
     private class Ctx(
         val prefix: String,
@@ -39,9 +43,15 @@ class DjangoLinker(private val options: Options = Options()) {
         val namespaces: List<String>,
         val chain: Set<String>,
         val depth: Int,
+        /** Expressions of the pins whose values are part of [prefix]. */
+        val pins: List<String> = emptyList(),
     ) {
-        fun with(prefix: String = this.prefix, params: List<PathParam> = this.params, problems: List<Diagnostic> = this.problems) =
-            Ctx(prefix, params, problems, namespaces, chain, depth)
+        fun with(
+            prefix: String = this.prefix,
+            params: List<PathParam> = this.params,
+            problems: List<Diagnostic> = this.problems,
+            pins: List<String> = this.pins,
+        ) = Ctx(prefix, params, problems, namespaces, chain, depth, pins)
     }
 
     // --- Symbols found by following a reference through imports ------------------------------------------------------
@@ -70,16 +80,32 @@ class DjangoLinker(private val options: Options = Options()) {
         var hasUnknownBase = false
     }
 
-    private class Run(private val all: List<DjangoFile>, private val options: Options) {
+    private class Run(private val all: List<DjangoFile>, private val options: Options, private val pinEnv: PinEnv) {
         private val endpoints = ArrayList<Endpoint>()
         private val diagnostics = ArrayList<Diagnostic>()
         private val byModule = HashMap<String, DjangoFile>()
         private val bySuffix = HashMap<String, MutableList<DjangoFile>>()
         private val registrationsByRouter = HashMap<String, MutableList<Pair<DjangoFile, Registration>>>()
-        private val evaluator = ExprEvaluator(ModuleTable(all.map { it.entry }))
+        private val table = ModuleTable(all.map { it.entry })
+        private val collector = SettingsCollector()
+        private val evaluator = ExprEvaluator(table, SettingsContext(pinEnv.values, collector))
+
+        /** Counts the routes below an include whose prefix is an unresolved setting: the same walk with that setting assumed empty. */
+        private val countingEvaluator by lazy(LazyThreadSafetyMode.NONE) {
+            ExprEvaluator(table, SettingsContext(pinEnv.values, null, assumeEmpty = true))
+        }
+        private var counting = false
         private val visited = HashSet<String>()
 
-        private fun eval(file: DjangoFile, expr: Expr): StrValue = evaluator.evaluate(file.entry, expr)
+        private class Hidden(val expression: String, val source: SourceRef, val routes: Int)
+
+        private val hidden = ArrayList<Hidden>()
+
+        private fun eval(file: DjangoFile, expr: Expr): StrValue =
+            (if (counting) countingEvaluator else evaluator).evaluate(file.entry, expr)
+
+        /** For values that are not path pieces (`ROOT_URLCONF`, an include's module name): no pin, no setting. */
+        private fun evalPlain(file: DjangoFile, expr: Expr): StrValue = evaluator.evaluate(file.entry, expr, settings = false)
 
         /** Verbs of a literal method list: upper case names that are HTTP methods, and whether some element was not exact. */
         private fun methodVerbs(file: DjangoFile, elements: List<Expr>): Pair<List<String>, Boolean> {
@@ -151,7 +177,9 @@ class DjangoLinker(private val options: Options = Options()) {
                 expand(list.facts, list.facts.patternLists.getValue(list.name), Ctx("", emptyList(), emptyList(), emptyList(), setOf(key), 0))
             }
             reportUncounted()
-            return LinkResult(endpoints.toList(), diagnostics.toList())
+            val tally = SettingTally(collector.suggestions)
+            hidden.forEach { tally.hit(it.expression, it.source, it.routes) }
+            return LinkResult(endpoints.toList(), diagnostics.toList(), tally.result(Framework.DJANGO))
         }
 
         /**
@@ -201,7 +229,7 @@ class DjangoLinker(private val options: Options = Options()) {
             if (configured.isNotEmpty()) {
                 val roots = LinkedHashMap<String, DjangoFile>()
                 configured.forEach { settings ->
-                    val value = eval(settings, settings.rootUrlconf!!)
+                    val value = evalPlain(settings, settings.rootUrlconf!!)
                     val module = (value as? StrValue.Known)?.let { findModule(it.text) }
                     if (module == null) diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, null, value.text)
                     else roots.putIfAbsent(module.path, module)
@@ -228,7 +256,7 @@ class DjangoLinker(private val options: Options = Options()) {
                         is SpliceItem -> pathOf(lookup(owner, item.ref))?.takeIf { it != owner.path }?.let(::note)
                         is RouteItem -> (item.target as? IncludeTarget)?.let { include ->
                             when (val spec = include.spec) {
-                                is ModuleSpec -> (eval(owner, spec.name) as? StrValue.Known)?.let { findModule(it.text) }?.let { note(it.path) }
+                                is ModuleSpec -> (evalPlain(owner, spec.name) as? StrValue.Known)?.let { findModule(it.text) }?.let { note(it.path) }
                                 is RefSpec -> pathOf(lookup(owner, spec.ref))?.takeIf { it != owner.path }?.let(::note)
                                 is InlineSpec -> scan(owner, spec.items)
                                 is OpaqueSpec -> Unit
@@ -276,7 +304,7 @@ class DjangoLinker(private val options: Options = Options()) {
                 diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, source(at, loc), key)
                 return
             }
-            val next = Ctx(ctx.prefix, ctx.params, ctx.problems, ctx.namespaces + listOfNotNull(namespace), ctx.chain + key, ctx.depth + 1)
+            val next = Ctx(ctx.prefix, ctx.params, ctx.problems, ctx.namespaces + listOfNotNull(namespace), ctx.chain + key, ctx.depth + 1, ctx.pins)
             expand(facts, items, next)
         }
 
@@ -286,6 +314,7 @@ class DjangoLinker(private val options: Options = Options()) {
             val route = eval(owner, item.route)
             // Correct or absent: a route whose text is not fully known is left out and reported, never listed approximately.
             if (!route.isExact) {
+                if (route.unresolved.isNotEmpty() && !counting) hide(owner, item, ctx, route, source)
                 val code = if (isInclude) DiagnosticCode.DYNAMIC_PREFIX else route.reason ?: DiagnosticCode.DYNAMIC_VALUE
                 diagnostics += warning(code, source, route.text)
                 return
@@ -298,11 +327,36 @@ class DjangoLinker(private val options: Options = Options()) {
                 diagnostics += warning(DiagnosticCode.UNSUPPORTED_REGEX, source, route.text)
                 return
             }
-            val next = ctx.with(prefix = ctx.prefix + piece.text, params = ctx.params + piece.params)
+            val next = ctx.with(prefix = ctx.prefix + piece.text, params = ctx.params + piece.params, pins = StrValue.union(ctx.pins, route.pins))
             when (val target = item.target) {
                 is ViewTarget -> view(owner, item, target, next)
                 is IncludeTarget -> include(owner, item, target, next)
             }
+        }
+
+        /**
+         * A route or include whose path text depends on settings nobody pinned: remember how many routes it hides. For an
+         * include the routes below are counted by walking it once with the settings assumed empty and throwing the result away.
+         */
+        private fun hide(owner: DjangoFile, item: RouteItem, ctx: Ctx, route: StrValue, source: SourceRef) {
+            var routes = 1
+            if (item.target is IncludeTarget) {
+                val endpointMark = endpoints.size
+                val diagnosticMark = diagnostics.size
+                val visitedBefore = HashSet(visited)
+                counting = true
+                try {
+                    route(owner, item, ctx)
+                } finally {
+                    counting = false
+                    routes = endpoints.size - endpointMark
+                    while (endpoints.size > endpointMark) endpoints.removeAt(endpoints.lastIndex)
+                    while (diagnostics.size > diagnosticMark) diagnostics.removeAt(diagnostics.lastIndex)
+                    visited.clear()
+                    visited.addAll(visitedBefore)
+                }
+            }
+            route.unresolved.forEach { hidden += Hidden(it, source, routes) }
         }
 
         private fun include(owner: DjangoFile, item: RouteItem, target: IncludeTarget, ctx: Ctx) {
@@ -318,7 +372,7 @@ class DjangoLinker(private val options: Options = Options()) {
 
             when (val spec = target.spec) {
                 is ModuleSpec -> {
-                    val name = eval(owner, spec.name)
+                    val name = evalPlain(owner, spec.name)
                     val module = (name as? StrValue.Known)?.let { findModule(it.text) }
                     if (module == null) diagnostics += warning(DiagnosticCode.UNRESOLVED_INCLUDE, source(owner, item.loc), name.text)
                     else enterModule(module)
@@ -342,14 +396,14 @@ class DjangoLinker(private val options: Options = Options()) {
 
         /** An opaque sub-application such as the admin site: one entry at its mount point, never expanded. */
         private fun mount(owner: DjangoFile, item: RouteItem, ctx: Ctx, dotted: String) =
-            add(HttpMethod.ANY, ctx.prefix, Framework.DJANGO, handlerOf(dotted), owner.path, item.loc, routeName(owner, item, ctx), ctx.params)
+            add(HttpMethod.ANY, ctx.prefix, Framework.DJANGO, handlerOf(dotted), owner.path, item.loc, routeName(owner, item, ctx), ctx.params, ctx.pins)
 
         // --- Views ---------------------------------------------------------------------------------------------------
 
         private fun view(owner: DjangoFile, item: RouteItem, target: ViewTarget, ctx: Ctx) {
             val name = routeName(owner, item, ctx)
             fun emit(method: HttpMethod, framework: Framework, handler: Handler) =
-                add(method, ctx.prefix, framework, handler, owner.path, item.loc, name, ctx.params)
+                add(method, ctx.prefix, framework, handler, owner.path, item.loc, name, ctx.params, ctx.pins)
 
             fun omit(code: DiagnosticCode) {
                 diagnostics += warning(code, source(owner, item.loc), target.ref.orEmpty())
@@ -488,17 +542,17 @@ class DjangoLinker(private val options: Options = Options()) {
             row.methods.forEach { (method, handlerName) ->
                 val path = ctx.prefix + row.pieceText
                 val params = ctx.params + row.params
-                add(method, path, Framework.DRF, handlerOf(handlerName), row.ownerPath, row.loc, namespaced, params)
+                add(method, path, Framework.DRF, handlerOf(handlerName), row.ownerPath, row.loc, namespaced, params, ctx.pins)
                 if (options.emitFormatSuffixVariants && decl.includeFormatSuffixes) {
                     add(
                         method, path.trimEnd('/') + ".{${DjangoCatalog.FORMAT_SUFFIX_PARAM}}", Framework.DRF, handlerOf(handlerName),
-                        row.ownerPath, row.loc, namespaced, params + PathParam(DjangoCatalog.FORMAT_SUFFIX_PARAM),
+                        row.ownerPath, row.loc, namespaced, params + PathParam(DjangoCatalog.FORMAT_SUFFIX_PARAM), ctx.pins,
                     )
                 }
             }
         }
 
-        private fun rows(owner: DjangoFile, registration: Registration, declFile: DjangoFile, decl: RouterDecl, ctx: Ctx) {
+        private fun rows(owner: DjangoFile, registration: Registration, declFile: DjangoFile, decl: RouterDecl, enclosing: Ctx) {
             val at = source(owner, registration.loc)
             val info: ClassInfo
             val classFacts: DjangoFile?
@@ -527,8 +581,10 @@ class DjangoLinker(private val options: Options = Options()) {
             // The prefix and trailing slash shape every row of this registration, so a doubt about them omits all of it.
             val prefixValue = eval(owner, registration.prefix)
             val slashValue = eval(declFile, decl.trailingSlash)
+            val ctx = enclosing.with(pins = StrValue.union(enclosing.pins, prefixValue.pins))
             for (value in listOf(prefixValue, slashValue)) {
                 if (!value.isExact) {
+                    if (!counting) value.unresolved.forEach { hidden += Hidden(it, at, 1) }
                     diagnostics += warning(value.reason ?: DiagnosticCode.DYNAMIC_VALUE, at, value.text)
                     return
                 }
@@ -669,6 +725,7 @@ class DjangoLinker(private val options: Options = Options()) {
             loc: Loc,
             routeName: String?,
             params: List<PathParam>,
+            pins: List<String> = emptyList(),
         ) {
             val path = if (prefixPath.startsWith("/")) prefixPath else "/$prefixPath"
             endpoints += Endpoint(
@@ -679,6 +736,7 @@ class DjangoLinker(private val options: Options = Options()) {
                 source = SourceRef(ownerPath, loc.offset, loc.line.coerceAtLeast(1)),
                 routeName = routeName,
                 pathParams = params,
+                pins = pins,
             )
         }
     }

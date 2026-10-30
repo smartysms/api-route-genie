@@ -2,6 +2,7 @@ package com.routegenie.frameworks.flask
 
 import com.routegenie.discovery.FileFacts
 import com.routegenie.discovery.LinkResult
+import com.routegenie.discovery.core.SettingTally
 import com.routegenie.frameworks.common.ArgFact
 import com.routegenie.frameworks.common.CallFact
 import com.routegenie.frameworks.common.LinkSupport
@@ -57,14 +58,22 @@ internal object FlaskLinker {
     /** Why nothing below can be listed; a [source] means it was reported once at that include, not per route. */
     private class Blocker(val code: DiagnosticCode, val source: SourceRef? = null)
 
-    private class State(val prefix: StrValue?, val names: String, val blocker: Blocker?)
+    private class State(
+        val prefix: StrValue?,
+        val names: String,
+        val blocker: Blocker?,
+        /** The settings the prefix was built from and where each is written, to count the routes hidden below them. */
+        val uses: List<Pair<String, SourceRef>> = emptyList(),
+    )
 
     private enum class ViewKind { METHOD_VIEW, VIEW, UNKNOWN }
 
     private class ViewTraits(val kind: ViewKind, val verbs: List<HttpMethod>, val methodsAttr: List<StrValue>?)
 
     fun link(facts: Collection<FileFacts>): LinkResult {
-        val files = PyResolver.resolve(facts, FlaskCatalog.PROVIDER_ID).sortedBy { it.path }
+        val resolution = PyResolver.resolveAll(facts, FlaskCatalog.PROVIDER_ID)
+        val files = resolution.facts.sortedBy { it.path }
+        val tally = SettingTally(resolution.suggestions)
         val index = PyModuleIndex(files)
         val diagnostics = LinkedHashSet<Diagnostic>()
         val endpoints = LinkedHashMap<String, Endpoint>()
@@ -142,12 +151,12 @@ internal object FlaskLinker {
         for (node in nodes.values) {
             if (node.hasIncoming) continue
             val state = if (node.isApp) State(null, "", null) else State(node.urlPrefix, nameOf(node.name, null, ""), Blocker(DiagnosticCode.UNATTACHED_ROUTER))
-            expand(node, state, hashSetOf(node.symbol.key), endpoints, diagnostics)
+            expand(node, state, hashSetOf(node.symbol.key), endpoints, diagnostics, tally)
         }
         for (route in orphans) {
             diagnostics += LinkSupport.diagnostic(DiagnosticCode.UNRESOLVED_RECEIVER, LinkSupport.sourceOf(route.file, route.pos))
         }
-        return LinkResult(endpoints.values.toList(), diagnostics.toList())
+        return LinkResult(endpoints.values.toList(), diagnostics.toList(), tally.result(Framework.FLASK))
     }
 
     private fun routesOfCall(
@@ -218,8 +227,15 @@ internal object FlaskLinker {
         return ViewTraits(kind, verbs.toList(), attr)
     }
 
-    private fun expand(node: Node, state: State, chain: MutableSet<String>, endpoints: MutableMap<String, Endpoint>, diagnostics: MutableSet<Diagnostic>) {
-        for (route in node.routes) emit(route, state, endpoints, diagnostics)
+    private fun expand(
+        node: Node,
+        state: State,
+        chain: MutableSet<String>,
+        endpoints: MutableMap<String, Endpoint>,
+        diagnostics: MutableSet<Diagnostic>,
+        tally: SettingTally,
+    ) {
+        for (route in node.routes) emit(route, state, endpoints, diagnostics, tally)
         for (edge in node.edges) {
             if (!chain.add(edge.child.symbol.key)) {
                 diagnostics += LinkSupport.diagnostic(DiagnosticCode.INCLUDE_CYCLE, edge.source)
@@ -239,7 +255,8 @@ internal object FlaskLinker {
                 edge.guessed -> Blocker(DiagnosticCode.UNRESOLVED_RECEIVER)
                 else -> null
             }
-            expand(edge.child, State(effective, nameOf(edge.child.name, edge.name, state.names), blocker), chain, endpoints, diagnostics)
+            val uses = state.uses + LinkSupport.usesOf(own, edge.source)
+            expand(edge.child, State(effective, nameOf(edge.child.name, edge.name, state.names), blocker, uses), chain, endpoints, diagnostics, tally)
             chain.remove(edge.child.symbol.key)
         }
     }
@@ -249,13 +266,17 @@ internal object FlaskLinker {
         return if (parentNames.isEmpty()) name else parentNames + FlaskCatalog.ENDPOINT_SEPARATOR + name
     }
 
-    private fun emit(route: Route, state: State, endpoints: MutableMap<String, Endpoint>, diagnostics: MutableSet<Diagnostic>) {
+    private fun emit(route: Route, state: State, endpoints: MutableMap<String, Endpoint>, diagnostics: MutableSet<Diagnostic>, tally: SettingTally) {
         val source = LinkSupport.sourceOf(route.file, route.pos)
         val joined = joinRule(state.prefix, route.rule)
         val methods = route.methods
-        if (state.blocker?.source != null) return
+        if (state.blocker?.source != null) {
+            tally.hitAll(state.uses + LinkSupport.usesOf(route.rule, source))
+            return
+        }
         val omit = state.blocker?.code ?: if (methods == null || !joined.isExact) DiagnosticCode.DYNAMIC_VALUE else null
         if (omit != null || methods == null) {
+            if (state.blocker == null && !joined.isExact) tally.hitAll(state.uses + LinkSupport.usesOf(route.rule, source))
             diagnostics += Diagnostic(Severity.WARNING, omit ?: DiagnosticCode.DYNAMIC_VALUE, source = source)
             return
         }
@@ -270,6 +291,7 @@ internal object FlaskLinker {
                 source = source,
                 routeName = endpointName,
                 pathParams = params,
+                pins = joined.pins,
             )
             endpoints.putIfAbsent(endpoint.declarationKey, endpoint)
         }
@@ -285,8 +307,12 @@ internal object FlaskLinker {
     /** Nested blueprint prefixes: `parent.rstrip("/") + "/" + child.lstrip("/")`. */
     internal fun joinPrefix(parent: StrValue, child: StrValue): StrValue {
         val text = parent.text.trimEnd('/') + FlaskCatalog.PATH_SEPARATOR + child.text.trimStart('/')
-        return if (parent.isExact && child.isExact) StrValue.Known(text)
-        else StrValue.Partial(text, parent.reason ?: child.reason ?: DiagnosticCode.DYNAMIC_VALUE)
+        val pins = StrValue.union(parent.pins, child.pins)
+        return if (parent.isExact && child.isExact) StrValue.Known(text, pins)
+        else StrValue.Partial(
+            text, parent.reason ?: child.reason ?: DiagnosticCode.DYNAMIC_VALUE, pins,
+            StrValue.union(parent.unresolved, child.unresolved),
+        )
     }
 
     /** Class hierarchies deeper than this are cut off; real view hierarchies are two or three levels. */

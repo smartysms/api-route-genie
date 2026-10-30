@@ -16,6 +16,40 @@ discovery, the window, the HTTP client and request validation are being built ph
 - Fast and leak-free by construction: speed budgets and leak checks are automated tests, see
   [docs/CONVENTIONS.md](docs/CONVENTIONS.md).
 
+## Pins: values the code takes from a setting
+
+Some URL prefixes are not in the code. The official FastAPI template includes its routes with `prefix=settings.API_V1_STR`, a
+NetBox-style Django project uses `path(settings.BASE_PATH, ...)`, a Flask blueprint can take `url_prefix=app.config["API_PREFIX"]`.
+The plugin never guesses such a value, so the routes below it are not listed. Instead the window asks once, in a slim strip under
+the toolbar:
+
+> 23 routes are hidden because their URL prefix comes from `settings.API_V1_STR`.
+> **Use /api/v1** (the default written in backend/app/core/config.py:22) | Enter another value | Not now
+
+- **Use** saves the default the code itself states (a class attribute default, `Field(default=...)`, the literal second argument of
+  `os.environ.get(...)`). Nothing is ever applied without your click, and a value is suggested only when the code writes a literal.
+- **Enter another value** shows a field with the same checks (a prefix starts with `/`, has no spaces, no `..`, a bounded length).
+- **Not now** hides the strip until the IDE restarts. The routes stay counted in a collapsed line, "N routes are hidden by
+  unresolved URL prefixes".
+- Pinned endpoints say so in the details ("Prefix taken from your pin settings.API_V1_STR = /api/v1", with a Change link).
+  Tools | Edit Route Genie Pins (or the link on the Settings page) lists, edits and deletes pins and marks the ones nothing uses.
+
+The pins live in `.route-genie/pins.json` in the project, one sorted pin per line, so the file is easy to review and merge and can
+be committed for the team. It never holds secrets: names with the words password, secret, token, key or credential are refused.
+
+```json
+{
+  "version": 1,
+  "pins": {
+    "app.config[\"API_PREFIX\"]": {"value": "/api", "note": "set in deploy/values.yaml"},
+    "settings.API_V1_STR": {"value": "/api/v1", "note": "the default written in backend/app/core/config.py:22", "at": "2026-10-30"}
+  }
+}
+```
+
+Edit it by hand if you like; changes (for example after `git pull`) are picked up at once. A file that cannot be read is reported
+once and left untouched; the plugin does not overwrite it.
+
 ## Requirements
 
 - PyCharm 2026.2 (build 262) or newer. The plugin depends only on the bundled Python plugin (`PythonCore`).

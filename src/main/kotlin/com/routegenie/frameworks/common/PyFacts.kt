@@ -6,6 +6,8 @@ import com.routegenie.discovery.core.ConstFact
 import com.routegenie.discovery.core.Expr
 import com.routegenie.discovery.core.ImportBinding
 import com.routegenie.discovery.core.ModuleSource
+import com.routegenie.discovery.core.SettingsClassFact
+import com.routegenie.discovery.core.SettingsInstanceFact
 import com.routegenie.discovery.core.StarBinding
 import com.routegenie.discovery.core.nodeCount
 import com.routegenie.model.StrValue
@@ -104,12 +106,19 @@ data class PyFileFacts(
     val decorators: List<DecoratorFact>,
     val calls: List<CallStmtFact>,
     val classes: List<ClassFact>,
+    override val settingClasses: List<SettingsClassFact> = emptyList(),
+    override val settingInstances: List<SettingsInstanceFact> = emptyList(),
 ) : ModuleSource {
     val isEmpty: Boolean
         get() = assignments.isEmpty() && decorators.isEmpty() && calls.isEmpty() && classes.isEmpty()
 
+    /** True when the file defines something other files' prefixes may be taken from (settings classes, `settings = Settings()`). */
+    val definesSettings: Boolean get() = settingClasses.isNotEmpty() || settingInstances.isNotEmpty()
+
     override val weight: Int by lazy(LazyThreadSafetyMode.PUBLICATION) {
-        val nodes = imports.size + stars.size + consts.sumOf { 1 + (it.value?.nodeCount() ?: 0) } +
+        val settingNodes = settingClasses.sumOf { c -> 2 + c.bases.size + c.attrs.sumOf { 3 + (it.default?.nodeCount() ?: 0) } } +
+            settingInstances.size * 2
+        val nodes = settingNodes + imports.size + stars.size + consts.sumOf { 1 + (it.value?.nodeCount() ?: 0) } +
             assignments.sumOf { 1 + it.call.nodeCount() } + decorators.sumOf { 2 + it.call.nodeCount() } +
             calls.sumOf { 2 + it.call.nodeCount() } + classes.sumOf { 2 + it.bases.size + it.methods.size + (it.methodsExprs?.sumOf { e -> e.nodeCount() } ?: 0) }
         Limits.FACT_ENTRY_BYTES + nodes * Limits.FACT_NODE_BYTES
@@ -135,6 +144,8 @@ data class PyFileFacts(
         decorators.forEach { refs += it.receiver.parts; call(it.call) }
         calls.forEach { refs += it.receiver.parts; call(it.call) }
         classes.forEach { c -> c.bases.forEach { refs += it.parts } }
+        // `settings = get_settings()`: the file that defines the factory is where the settings class (and its defaults) lives.
+        settingInstances.forEach { refs += it.callee.split('.') }
         refs.toList()
     }
 

@@ -42,6 +42,12 @@ interface ModuleSource : SourceFacts {
 
     /** Absolute module names mentioned as strings, such as `include("shop.urls")`. */
     val wantedModules: List<String>
+
+    /** Classes that look like a settings holder (`class Settings(BaseSettings)`), with their attributes; see [SettingsClassFact]. */
+    val settingClasses: List<SettingsClassFact> get() = emptyList()
+
+    /** Module-level `settings = Settings()` / `settings = get_settings()` and settings factory functions. */
+    val settingInstances: List<SettingsInstanceFact> get() = emptyList()
 }
 
 /** One file as the pure linker sees it: where it is, how it is named as a module, and its context-free facts. */

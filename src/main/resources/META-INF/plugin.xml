@@ -28,6 +28,7 @@
         <errorHandler implementation="com.routegenie.diagnostics.RouteGenieErrorReportSubmitter"/>
         <postStartupActivity implementation="com.routegenie.diagnostics.WhatsNewStartup"/>
         <projectService serviceImplementation="com.routegenie.discovery.core.RouteDiscoveryService"/>
+        <projectService serviceImplementation="com.routegenie.pinside.PinsService"/>
         <toolWindow id="RouteGenie" anchor="right" icon="/icons/routeGenie.svg" canCloseContents="false"
                     factoryClass="com.routegenie.ui.RouteGenieToolWindowFactory"/>
         <codeInsight.lineMarkerProvider language="Python"
@@ -65,5 +66,8 @@
         <action id="RouteGenie.SendRequest" class="com.routegenie.ui.request.SendRequestAction"
                 icon="/icons/routeGenie.svg"/>
         <action id="RouteGenie.CopyAsCurl" class="com.routegenie.ui.request.CopyAsCurlAction"/>
+        <action id="RouteGenie.EditPins" class="com.routegenie.ui.pins.EditPinsAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>

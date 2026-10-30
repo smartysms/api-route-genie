@@ -13,22 +13,52 @@ sealed interface StrValue {
 
     val isExact: Boolean get() = this is Known
 
-    data class Known(override val text: String) : StrValue {
+    /**
+     * The pins (user-confirmed settings, see `pins`) this value was computed with. A value that carries one is still exact:
+     * the user stated the part the code could not.
+     */
+    val pins: List<String> get() = emptyList()
+
+    /** Expressions of settings that stopped this value from being exact, as written in the code (`settings.API_V1_STR`). */
+    val unresolved: List<String> get() = emptyList()
+
+    data class Known(override val text: String, override val pins: List<String> = emptyList()) : StrValue {
         override val reason: DiagnosticCode? get() = null
     }
 
     /** Some parts are known, the rest is computed at runtime; [text] shows the unknown parts as `{?}`. */
-    data class Partial(override val text: String, override val reason: DiagnosticCode) : StrValue
+    data class Partial(
+        override val text: String,
+        override val reason: DiagnosticCode,
+        override val pins: List<String> = emptyList(),
+        override val unresolved: List<String> = emptyList(),
+    ) : StrValue
 
     /** Nothing about the value could be determined. */
-    data class Unknown(override val reason: DiagnosticCode = DiagnosticCode.DYNAMIC_VALUE) : StrValue {
+    data class Unknown(
+        override val reason: DiagnosticCode = DiagnosticCode.DYNAMIC_VALUE,
+        override val unresolved: List<String> = emptyList(),
+    ) : StrValue {
         override val text: String get() = PathSyntax.UNKNOWN_SEGMENT
     }
 
-    /** Concatenation: exact only when both sides are exact; the first reason found is kept. */
-    operator fun plus(other: StrValue): StrValue = when {
-        this is Known && other is Known -> Known(text + other.text)
-        this is Unknown && other is Unknown -> this
-        else -> Partial(text + other.text, reason ?: other.reason ?: DiagnosticCode.DYNAMIC_VALUE)
+    /** Concatenation: exact only when both sides are exact; the first reason found is kept, pins and settings are united. */
+    operator fun plus(other: StrValue): StrValue {
+        val pinsOf = union(pins, other.pins)
+        val settingsOf = union(unresolved, other.unresolved)
+        return when {
+            this is Known && other is Known -> Known(text + other.text, pinsOf)
+            this is Unknown && other is Unknown -> Unknown(reason, settingsOf)
+            else -> Partial(text + other.text, reason ?: other.reason ?: DiagnosticCode.DYNAMIC_VALUE, pinsOf, settingsOf)
+        }
+    }
+
+    companion object {
+        /** Order-preserving union that allocates nothing in the common case of two empty lists. */
+        fun union(a: List<String>, b: List<String>): List<String> = when {
+            b.isEmpty() -> a
+            a.isEmpty() -> b
+            else -> (a + b).distinct()
+        }
     }
 }

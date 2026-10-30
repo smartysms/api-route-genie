@@ -5,6 +5,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.routegenie.discovery.RouteProvider
 import com.routegenie.model.RouteSnapshot
+import com.routegenie.pinside.PinsService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
 
@@ -13,7 +14,10 @@ import kotlinx.coroutines.flow.StateFlow
  * closes; the engine does the work. Consumers collect [snapshot] and never recompute anything.
  */
 class RouteDiscoveryService(project: Project, scope: CoroutineScope) : Disposable {
-    private val engine = RouteDiscoveryEngine(project, scope, this, { RouteProvider.EP_NAME.extensionList }, active = false)
+    private val engine = RouteDiscoveryEngine(
+        project, scope, this, { RouteProvider.EP_NAME.extensionList }, active = false,
+        pins = { PinsService.getInstance(project).env },
+    )
 
     val snapshot: StateFlow<RouteSnapshot> get() = engine.snapshot
 

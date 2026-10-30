@@ -535,4 +535,35 @@ object Limits {
     const val GENERATED_FILES_MAX = 200
     const val FILE_NAME_MIN_CHARS = 5
     const val FILE_NAME_MAX_CHARS = 9
+
+    // --- Pins: user-confirmed values for URL prefixes that the code takes from a setting ---------------------------------------
+
+    /** Settings (unresolved or pinned) shown and kept per snapshot; the rest is cut, most routes first. */
+    const val MAX_UNRESOLVED_SETTINGS = 50
+
+    /** Facts about settings holders read from one file: classes, attributes per class, and `settings = Settings()` lines. */
+    const val MAX_SETTINGS_CLASSES_PER_FILE = 16
+    const val MAX_SETTINGS_ATTRS_PER_CLASS = 200
+    const val MAX_SETTINGS_INSTANCES_PER_FILE = 16
+
+    /** The pins file: version written today, largest accepted size, most pins kept, longest expression and value, longest note. */
+    const val PINS_FILE_VERSION = 1
+    const val PINS_FILE_MAX_BYTES = 256 * 1024
+    const val MAX_PINS = 500
+    const val PIN_MAX_EXPRESSION_CHARS = 200
+    const val PIN_MAX_VALUE_CHARS = 200
+    const val PIN_MAX_NOTE_CHARS = 300
+
+    /** Strips shown at once above the endpoint list (one per unresolved setting, most routes first); the rest sit in the hidden-routes line. */
+    const val PINS_MAX_STRIPS = 3
+
+    /** Settings listed in the hidden-routes line before it says "and N more". */
+    const val PINS_MAX_HIDDEN_LINES = 10
+
+    /** Unresolved settings the IDE remembers as "not now" per project (least recently added dropped first). */
+    const val PINS_MAX_DISMISSED = 200
+
+    /** Reading and validating a pins file of 500 entries, and linking (applying a changed pin, or noticing settings) a project of 300 route files with 900 routes. */
+    const val BUDGET_PINS_PARSE_MS = 20L
+    const val BUDGET_PINS_APPLY_MS = 100L
 }

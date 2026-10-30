@@ -302,6 +302,38 @@ No crash, no hang, no timeout, no engine exception in any run (all 8 repos compl
 9. **Info:** the first repository of a run pays class loading and JIT (django-rest-framework: 101 files/s although it has
    tiny files). Cold results under 2 s should not be compared across repos.
 
+
+## Pins (settings-driven prefixes), measured 2026-10-30
+
+Harness: `src/test/kotlin/com/routegenie/bench/PinsCorpusTest.kt` (opt-in, `ROUTEGENIE_CORPUS=<dir>`, test heap 4 GB; results in
+`build/reports/routegenie/bench/pins-<repo>.txt`). The table at the top of this file was measured on commit 4344224; commit
+7f46319 (benchmark fixes) changed the counts afterwards (fastapi 1,471 to 1,779, flask 115 to 152, sentry 0 to 1,222). To prove that
+the pins work changes nothing without a pin, the same engine was run on the same clones for HEAD before the work (extracted copy,
+counts only) and after it.
+
+| repo | endpoints before pins work (HEAD) | endpoints now, no pin | diagnostics before / now | unresolved settings reported |
+|---|---|---|---|---|
+| full-stack-fastapi-template | 0 | 0 | 1 / 1 | `settings.API_V1_STR` hides 23 routes, suggestion `/api/v1` from `backend/app/core/config.py:22` |
+| fastapi | 1,779 | 1,779 | 50 / 50 | none |
+| flask | 152 | 152 | 222 / 222 | none |
+| superset | 11 | 11 | 8 / 8 | none |
+| django | 740 | 740 | 374 / 374 | none |
+| django-rest-framework | 139 | 139 | 52 / 52 | none |
+| netbox | 0 | 0 | 1 / 1 | `settings.BASE_PATH` hides 68 routes, no suggestion (no literal default in the code) |
+| sentry | 1,222 | 1,222 | 60 / 60 | none |
+
+With a pin:
+
+- full-stack-fastapi-template with the suggested pin `settings.API_V1_STR = /api/v1`: **0 to 23 endpoints** (DELETE 3, GET 6, PATCH 3,
+  POST 10, PUT 1), no setting left, no diagnostic, all 23 marked as pinned.
+- netbox with `settings.BASE_PATH = ""` (a root deployment, chosen by hand, never suggested): 0 to 68 endpoints, no setting left.
+
+Cost (PerfBudget medians on the synthetic project of 300 route files and 900 routes, budget 100 ms): linking with a pin 11.5 ms,
+linking with the setting unresolved 6.6 ms, linking a project with literal prefixes only 14.1 ms (so noticing settings is within
+noise of the normal path). Parsing a pins file of 500 entries 7.1 ms (budget 20 ms). Updating the strips for 50 settings 3.6 ms
+(budget 50 ms). The corpus cold times did not move beyond run-to-run noise (template 75 ms, fastapi 2.0 s, django 0.8 s, sentry 3.1 s
+in this run, machine busy with other builds).
+
 ## Recommendations
 
 1. Fix bug 1 first (Sentry-shaped projects show an empty window with no explanation), then bug 5 (zero invented).

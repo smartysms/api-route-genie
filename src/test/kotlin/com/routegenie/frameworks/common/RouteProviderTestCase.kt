@@ -32,6 +32,10 @@ abstract class RouteProviderTestCase(private val provider: RouteProvider) : Pyth
 
     protected fun discoverAll(): LinkResult = provider.link(ProviderPipeline.collect(project, provider))
 
+    /** Like [discoverAll] with the user's pins (expression to value) handed to the linker, exactly as the engine does. */
+    protected fun discoverAll(pins: Map<String, String>): LinkResult =
+        provider.link(ProviderPipeline.collect(project, provider) + com.routegenie.discovery.core.PinEnv(pins))
+
     /** `GET /path` lines, sorted, for exact list assertions. */
     protected fun routes(result: LinkResult): List<String> =
         result.endpoints.map { "${it.method} ${it.path}" }.sorted()

@@ -3,6 +3,7 @@ package com.routegenie.discovery.core
 import com.routegenie.Limits
 import com.routegenie.model.DiagnosticCode
 import com.routegenie.model.PathSyntax
+import com.routegenie.model.SettingSuggestion
 import com.routegenie.model.StrValue
 
 /**
@@ -13,10 +14,16 @@ import com.routegenie.model.StrValue
  *
  * Correct or absent: anything it cannot prove is [StrValue.Unknown] or [StrValue.Partial]; it never guesses.
  */
-class ExprEvaluator(private val table: ModuleTable) {
-    fun evaluate(owner: ModuleEntry, expr: Expr?): StrValue {
+class ExprEvaluator(private val table: ModuleTable, private val context: SettingsContext = SettingsContext.NONE) {
+    private val settingsIndex by lazy(LazyThreadSafetyMode.NONE) { SettingsIndex(table) }
+
+    /**
+     * [settings] false evaluates without the settings machinery: no pin is applied and no setting is noticed. Used for values
+     * that are not path pieces (a `ROOT_URLCONF`, an include's module name).
+     */
+    fun evaluate(owner: ModuleEntry, expr: Expr?, settings: Boolean = true): StrValue {
         if (expr == null) return unknown()
-        return Run().eval(owner, expr, text = false)
+        return Run(settings).eval(owner, expr, text = false)
     }
 
     private fun unknown(): StrValue = StrValue.Unknown(DiagnosticCode.DYNAMIC_VALUE)
@@ -24,7 +31,7 @@ class ExprEvaluator(private val table: ModuleTable) {
     private fun partialHole(): StrValue = StrValue.Partial(PathSyntax.UNKNOWN_SEGMENT, DiagnosticCode.DYNAMIC_VALUE)
 
     /** State of one top-level evaluation: the chain of names being resolved, to stop cycles and runaway depth. */
-    private inner class Run {
+    private inner class Run(private val settings: Boolean) {
         private val visiting = HashSet<String>()
 
         /** [text] widens the result to numbers, which only matters where Python converts with `str()` itself. */
@@ -37,8 +44,41 @@ class ExprEvaluator(private val table: ModuleTable) {
             is Interp -> eval(owner, e.value, text = true)
             is Percent -> evalPercent(owner, e)
             is Format -> evalFormat(owner, e)
+            is SettingRead -> evalSetting(e)
             Hole -> partialHole()
             Opaque -> unknown()
+        }
+
+        // --- settings -------------------------------------------------------------------------------------------------
+
+        /** `os.environ.get("X", "/d")`: the pin when there is one, else unknown, with the written literal default noted. */
+        private fun evalSetting(e: SettingRead): StrValue {
+            if (!settings) return unknown()
+            pinned(e.canonical)?.let { return it }
+            val default = (e.default as? Lit)?.let { SettingSuggestion(it.text, SettingsCatalog.defaultKind(e.canonical), null) }
+            return unresolvedSetting(e.canonical, default)
+        }
+
+        private fun pinned(expression: String): StrValue? {
+            val value = context.pins[expression] ?: return null
+            return StrValue.Known(value, listOf(expression))
+        }
+
+        private fun unresolvedSetting(expression: String, suggestion: SettingSuggestion?): StrValue {
+            if (context.assumeEmpty) return StrValue.Known("")
+            context.collector?.note(expression, suggestion)
+            return StrValue.Unknown(DiagnosticCode.DYNAMIC_VALUE, listOf(expression))
+        }
+
+        /** A name or attribute chain that nothing in the project defines: a pin, or a setting the user may be asked about. */
+        private fun settingOrUnknown(owner: ModuleEntry, parts: List<String>): StrValue {
+            if (!settings) return unknown()
+            val expression = parts.joinToString(".")
+            pinned(expression)?.let { return it }
+            if (parts.size < 2) return unknown()
+            val found = settingsIndex.find(owner, parts.dropLast(1), parts.last())
+            if (found == null && parts[parts.size - 2] !in SettingsCatalog.OBJECT_NAMES) return unknown()
+            return unresolvedSetting(expression, found?.let { settingsIndex.suggestionOf(it) })
         }
 
         private fun evalFString(owner: ModuleEntry, e: FStr): StrValue {
@@ -136,6 +176,11 @@ class ExprEvaluator(private val table: ModuleTable) {
                 lookupName(owner, name, text)
             } else {
                 moduleOf(owner, parts.dropLast(1))?.let { lookupName(it, name, text) }
+            }
+            // Only a name that nothing defines (or whose value is unknown) can be a setting: a known value always wins.
+            if (value == null || value is StrValue.Unknown && value.unresolved.isEmpty()) {
+                val setting = settingOrUnknown(owner, parts)
+                if (setting !is StrValue.Unknown || setting.unresolved.isNotEmpty()) return setting
             }
             return value ?: unknown()
         }

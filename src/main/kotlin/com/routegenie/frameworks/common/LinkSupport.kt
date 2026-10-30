@@ -55,6 +55,10 @@ object LinkSupport {
         return listOfNotNull(arg.ref) + inner
     }
 
+    /** The settings that make [value] inexact, each with the place [source] where [value] is written. */
+    fun usesOf(value: StrValue?, source: SourceRef): List<Pair<String, SourceRef>> =
+        value?.unresolved.orEmpty().map { it to source }
+
     /** Joins like [prefix] + [rest] but treats a missing prefix as empty. */
     fun concat(prefix: StrValue?, rest: StrValue): StrValue = if (prefix == null) rest else prefix + rest
 

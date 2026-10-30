@@ -38,6 +38,7 @@ import com.routegenie.model.PathSyntax
 import com.routegenie.model.RouteSnapshot
 import com.routegenie.model.Severity
 import com.routegenie.model.SourceRef
+import com.routegenie.model.UnresolvedSetting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +81,8 @@ class RouteDiscoveryEngine(
     cacheWeightLimit: Long = Limits.MAX_FACTS_CACHE_BYTES,
     active: Boolean = true,
     parallelism: Int = Limits.extractParallelism(Runtime.getRuntime().availableProcessors()),
+    /** The user's pins at the moment of linking; plain data, so the linkers stay free of the IDE. */
+    private val pins: () -> PinEnv = { PinEnv.EMPTY },
 ) {
     private val log = Logger.getInstance(RouteDiscoveryEngine::class.java)
     private val state = MutableStateFlow(RouteSnapshot.EMPTY)
@@ -213,6 +216,7 @@ class RouteDiscoveryEngine(
             isStale = false
             val endpoints = ArrayList<Endpoint>()
             val diagnostics = ArrayList<Diagnostic>()
+            val settings = ArrayList<UnresolvedSetting>()
             var changed = false
             val sorted = providers().sortedBy { it.id }
             if (memo.keys != sorted.mapTo(HashSet()) { it.id }) changed = true
@@ -222,12 +226,18 @@ class RouteDiscoveryEngine(
                 changed = changed || outcome.changed
                 endpoints += outcome.endpoints
                 diagnostics += outcome.diagnostics
+                settings += outcome.settings
             }
-            if (changed || state.value.generation == 0L) publish(endpoints, diagnostics)
+            if (changed || state.value.generation == 0L) publish(endpoints, diagnostics, settings)
         }
     }
 
-    private class Outcome(val endpoints: List<Endpoint>, val diagnostics: List<Diagnostic>, val changed: Boolean)
+    private class Outcome(
+        val endpoints: List<Endpoint>,
+        val diagnostics: List<Diagnostic>,
+        val changed: Boolean,
+        val settings: List<UnresolvedSetting> = emptyList(),
+    )
 
     /**
      * What a link was made from. The facts are held weakly on purpose: the cache bounds how much extracted data stays in
@@ -238,9 +248,11 @@ class RouteDiscoveryEngine(
         val failures: List<Diagnostic>,
         val endpoints: List<Endpoint>,
         val diagnostics: List<Diagnostic>,
+        val pins: PinEnv,
+        val settings: List<UnresolvedSetting>,
     ) {
-        fun sameAs(located: List<LocatedFacts>, newFailures: List<Diagnostic>): Boolean =
-            failures == newFailures && inputs.size == located.size &&
+        fun sameAs(located: List<LocatedFacts>, newFailures: List<Diagnostic>, newPins: PinEnv): Boolean =
+            failures == newFailures && pins == newPins && inputs.size == located.size &&
                 inputs.indices.all { i -> inputs[i].matches(located[i]) }
     }
 
@@ -271,15 +283,17 @@ class RouteDiscoveryEngine(
             }
             evictUnused(provider, live)
             val inputs = located.values.toList()
+            val pinEnv = pins()
             val previous = memo[provider.id]
-            if (previous != null && previous.sameAs(inputs, failures)) {
-                return Outcome(previous.endpoints, previous.diagnostics, changed = false)
+            if (previous != null && previous.sameAs(inputs, failures, pinEnv)) {
+                return Outcome(previous.endpoints, previous.diagnostics, changed = false, settings = previous.settings)
             }
-            // No lock is held here: linking is pure data work and may take a while for large projects.
-            val linked = provider.link(inputs)
+            // No lock is held here: linking is pure data work and may take a while for large projects. Pins travel with the
+            // facts as one more plain-data item; with no pins the provider sees exactly what it always saw.
+            val linked = provider.link(if (pinEnv.values.isEmpty()) inputs else inputs + pinEnv)
             val diagnostics = failures + linked.diagnostics
-            memo[provider.id] = Memo(inputs.map(::Input), failures, linked.endpoints, diagnostics)
-            return Outcome(linked.endpoints, diagnostics, changed = true)
+            memo[provider.id] = Memo(inputs.map(::Input), failures, linked.endpoints, diagnostics, pinEnv, linked.settings)
+            return Outcome(linked.endpoints, diagnostics, changed = true, settings = linked.settings)
         } catch (e: Throwable) {
             rethrowIfControlFlow(e)
             log.warn("Route provider ${provider.id} failed", e)
@@ -428,7 +442,7 @@ class RouteDiscoveryEngine(
      * reported once per endpoint so it cannot disappear silently. [HttpMethod.ANY] stays: it is a documented, exact
      * answer for views that accept every verb.
      */
-    private fun publish(candidates: List<Endpoint>, found: List<Diagnostic>) {
+    private fun publish(candidates: List<Endpoint>, found: List<Diagnostic>, unresolved: List<UnresolvedSetting>) {
         val endpoints = ArrayList<Endpoint>(candidates.size)
         val diagnostics = ArrayList<Diagnostic>(found)
         for (endpoint in candidates) {
@@ -443,9 +457,23 @@ class RouteDiscoveryEngine(
             }
         }
         val numbered = EndpointKeys.disambiguate(endpoints)
+        val settings = mergeSettings(unresolved)
         val previous = state.value
-        if (previous.generation > 0 && previous.endpoints == numbered && previous.diagnostics == diagnostics) return
-        state.value = RouteSnapshot(generation.incrementAndGet(), numbered, diagnostics)
+        if (previous.generation > 0 && previous.endpoints == numbered && previous.diagnostics == diagnostics && previous.settings == settings) return
+        state.value = RouteSnapshot(generation.incrementAndGet(), numbered, diagnostics, settings)
+    }
+
+    /**
+     * The same expression can be reported by several providers (a Django project that also uses FastAPI): one entry, routes
+     * added up, the first place of use, and a suggestion only when all reports agree.
+     */
+    private fun mergeSettings(all: List<UnresolvedSetting>): List<UnresolvedSetting> {
+        if (all.size < 2) return all
+        return all.groupBy { it.expression }.values.map { group ->
+            val first = group.first()
+            val suggestions = group.mapNotNull { it.suggestion }.distinctBy { it.value }
+            first.copy(routeCount = group.sumOf { it.routeCount }, suggestion = suggestions.singleOrNull())
+        }.sortedWith(compareByDescending<UnresolvedSetting> { it.routeCount }.thenBy { it.expression }).take(Limits.MAX_UNRESOLVED_SETTINGS)
     }
 
     private fun failure(providerId: String, file: VirtualFile?, error: Throwable): Diagnostic {

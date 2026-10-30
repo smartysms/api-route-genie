@@ -1,0 +1,12 @@
+# With the pin settings.API_V1_STR = /api/v1 : METHOD path -> handler
+DELETE /api/v1/users/{user_id} -> backend.app.api.routes.users.delete_user
+GET /api/v1/items/ -> backend.app.api.routes.items.read_items
+GET /api/v1/items/{id} -> backend.app.api.routes.items.read_item
+GET /api/v1/users/ -> backend.app.api.routes.users.read_users
+GET /api/v1/users/me -> backend.app.api.routes.users.read_user_me
+GET /api/v1/utils/health-check/ -> backend.app.api.routes.utils.health_check
+POST /api/v1/login/access-token -> backend.app.api.routes.login.login_access_token
+POST /api/v1/login/test-token -> backend.app.api.routes.login.test_token
+POST /api/v1/password-recovery/{email} -> backend.app.api.routes.login.recover_password
+POST /api/v1/users/ -> backend.app.api.routes.users.create_user
+PUT /api/v1/items/{id} -> backend.app.api.routes.items.update_item

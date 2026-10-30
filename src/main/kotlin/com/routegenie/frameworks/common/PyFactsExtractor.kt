@@ -16,12 +16,19 @@ import com.jetbrains.python.psi.PyRecursiveElementVisitor
 import com.jetbrains.python.psi.PyReferenceExpression
 import com.jetbrains.python.psi.PySetLiteralExpression
 import com.jetbrains.python.psi.PyStarArgument
+import com.jetbrains.python.psi.PyReturnStatement
 import com.jetbrains.python.psi.PyTargetExpression
+import com.jetbrains.python.psi.PyTypeDeclarationStatement
 import com.jetbrains.python.psi.PyTupleExpression
 import com.intellij.openapi.progress.ProgressManager
 import com.routegenie.Limits
 import com.routegenie.discovery.core.ConstFact
+import com.routegenie.discovery.core.AttrFact
+import com.routegenie.discovery.core.AttrKind
 import com.routegenie.discovery.core.Expr
+import com.routegenie.discovery.core.SettingsCatalog
+import com.routegenie.discovery.core.SettingsClassFact
+import com.routegenie.discovery.core.SettingsInstanceFact
 
 /**
  * One pass over a Python file producing [PyFileFacts]. Frameworks are recognized later from import origins, never by
@@ -39,7 +46,7 @@ object PyFactsExtractor {
         file.accept(collector)
         val facts = collector.build(PyExprBuilder.constsOf(file))
         if (!facts.isEmpty) return facts
-        val supports = facts.imports.isNotEmpty() || facts.stars.isNotEmpty() || facts.consts.isNotEmpty()
+        val supports = facts.imports.isNotEmpty() || facts.stars.isNotEmpty() || facts.consts.isNotEmpty() || facts.definesSettings
         return if (asDependency && supports) facts else null
     }
 
@@ -57,6 +64,8 @@ object PyFactsExtractor {
         private val classes = ArrayList<ClassFact>()
         private val scopes = ArrayList<String>()
         private val classNames = ArrayList<String>()
+        private val settingClasses = ArrayList<SettingsClassFact>()
+        private val settingInstances = ArrayList<SettingsInstanceFact>()
 
         fun build(consts: List<ConstFact>) = PyFileFacts(
             providerId = spec.providerId,
@@ -67,6 +76,8 @@ object PyFactsExtractor {
             decorators = decorators,
             calls = calls,
             classes = classes,
+            settingClasses = settingClasses,
+            settingInstances = settingInstances,
         )
 
         private val scope: String get() = scopes.joinToString(".")
@@ -84,6 +95,11 @@ object PyFactsExtractor {
             val callee = call?.let { refOf(it.callee) }
             if (name != null && call != null && callee != null && isConstructor(callee)) {
                 assignments += AssignFact(name, scope, callFact(call, 0), posOf(node))
+            }
+            if (name != null && callee != null && scopes.isEmpty() && settingInstances.size < Limits.MAX_SETTINGS_INSTANCES_PER_FILE &&
+                (SettingsCatalog.looksLikeSettingsFactory(name) || SettingsCatalog.looksLikeSettingsFactory(callee.last))
+            ) {
+                settingInstances += SettingsInstanceFact(name.intern(), callee.toString().intern(), isFunction = false)
             }
             super.visitPyAssignmentStatement(node)
         }
@@ -107,6 +123,7 @@ object PyFactsExtractor {
         }
 
         override fun visitPyFunction(node: PyFunction) {
+            if (scopes.isEmpty()) settingsFactoryOf(node)?.let { settingInstances += it }
             val handler = (classNames + node.name.orEmpty()).joinToString(".")
             for (decorator in node.decoratorList?.decorators.orEmpty()) {
                 val callee = decorator.callee as? PyReferenceExpression ?: continue
@@ -122,6 +139,7 @@ object PyFactsExtractor {
 
         override fun visitPyClass(node: PyClass) {
             val name = node.name.orEmpty()
+            if (scopes.isEmpty() && settingClasses.size < Limits.MAX_SETTINGS_CLASSES_PER_FILE) settingsClassOf(node)?.let { settingClasses += it }
             if (spec.capturesClasses) {
                 val bases = node.superClassExpressions.mapNotNull { refOf(it) }
                 if (bases.isNotEmpty()) {
@@ -133,6 +151,55 @@ object PyFactsExtractor {
             super.visitPyClass(node)
             classNames.removeAt(classNames.lastIndex)
             scopes.removeAt(scopes.lastIndex)
+        }
+
+        /** `def get_settings(): return Settings()` (also under `@lru_cache`): the function stands for the class it returns. */
+        private fun settingsFactoryOf(node: PyFunction): SettingsInstanceFact? {
+            val name = node.name ?: return null
+            if (!SettingsCatalog.looksLikeSettingsFactory(name)) return null
+            val returned = node.statementList.statements.filterIsInstance<PyReturnStatement>().singleOrNull()?.expression
+            val callee = refOf((returned as? PyCallExpression)?.callee) ?: return null
+            return SettingsInstanceFact(name.intern(), callee.toString().intern(), isFunction = true)
+        }
+
+        /** A class that looks like a settings holder, with the attributes written in its body and their defaults. */
+        private fun settingsClassOf(node: PyClass): SettingsClassFact? {
+            val name = node.name ?: return null
+            val bases = node.superClassExpressions.mapNotNull { refOf(it)?.toString() }
+            if (!SettingsCatalog.looksLikeSettingsClass(name, bases)) return null
+            val attrs = ArrayList<AttrFact>()
+            for (statement in node.statementList.statements) {
+                if (attrs.size >= Limits.MAX_SETTINGS_ATTRS_PER_CLASS) break
+                when (statement) {
+                    is PyTypeDeclarationStatement -> (statement.target as? PyTargetExpression)?.name?.let {
+                        attrs += AttrFact(it.intern(), AttrKind.NONE, null, statement.textRange.startOffset, lineOf(statement.textRange.startOffset))
+                    }
+                    is PyAssignmentStatement -> {
+                        val target = statement.targets.singleOrNull() as? PyTargetExpression ?: continue
+                        attrs += attrOf(target.name ?: continue, statement.assignedValue, statement)
+                    }
+                }
+            }
+            return SettingsClassFact(name.intern(), bases.map { it.intern() }, attrs)
+        }
+
+        /** `X = "/a"`, `X: str = "/a"`, `X = Field(default="/a")`, `X = Field(default_factory=f)`. */
+        private fun attrOf(name: String, value: PyExpression?, at: PsiElement): AttrFact {
+            val offset = at.textRange.startOffset
+            val line = lineOf(offset)
+            val call = unwrap(value) as? PyCallExpression
+            if (call != null && refOf(call.callee)?.last == SettingsCatalog.FIELD) {
+                val arguments = call.arguments
+                val factory = arguments.filterIsInstance<PyKeywordArgument>().any { it.keyword == SettingsCatalog.FIELD_FACTORY }
+                val default = arguments.filterIsInstance<PyKeywordArgument>().firstOrNull { it.keyword == SettingsCatalog.FIELD_DEFAULT }?.valueExpression
+                    ?: arguments.firstOrNull { it !is PyKeywordArgument && it !is PyStarArgument }
+                return when {
+                    factory -> AttrFact(name.intern(), AttrKind.FACTORY, null, offset, line)
+                    default != null -> AttrFact(name.intern(), AttrKind.VALUE, PyExprBuilder.build(default), offset, line)
+                    else -> AttrFact(name.intern(), AttrKind.NONE, null, offset, line)
+                }
+            }
+            return AttrFact(name.intern(), AttrKind.VALUE, PyExprBuilder.build(value), offset, line)
         }
 
         private fun methodsAttribute(node: PyClass): List<Expr>? {

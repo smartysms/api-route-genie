@@ -7,6 +7,10 @@ import com.routegenie.discovery.core.ModuleEntry
 import com.routegenie.discovery.core.ModuleNames
 import com.routegenie.discovery.core.ModuleTable
 import com.routegenie.discovery.core.ModuleWalk
+import com.routegenie.discovery.core.PinEnv
+import com.routegenie.discovery.core.SettingsCollector
+import com.routegenie.discovery.core.SettingsContext
+import com.routegenie.model.SettingSuggestion
 
 /**
  * The first stage of both Python linkers, and the only place where facts meet other files: it names every file as a
@@ -15,12 +19,22 @@ import com.routegenie.discovery.core.ModuleWalk
  */
 object PyResolver {
     /** Facts of [providerId] in [files]: located context-free facts are resolved, already resolved facts pass through. */
-    fun resolve(files: Collection<FileFacts>, providerId: String): List<PyRouteFacts> {
+    fun resolve(files: Collection<FileFacts>, providerId: String): List<PyRouteFacts> = resolveAll(files, providerId).facts
+
+    /** What resolving produced: the facts, and the defaults the code states for settings it could not evaluate. */
+    class Resolution(val facts: List<PyRouteFacts>, val suggestions: Map<String, SettingSuggestion>)
+
+    /**
+     * Like [resolve], and applies the pins in [files] (a [PinEnv]): an expression the user pinned evaluates to the pinned
+     * value, and the values that depend on it say so ([com.routegenie.model.StrValue.pins]).
+     */
+    fun resolveAll(files: Collection<FileFacts>, providerId: String): Resolution {
         val direct = files.filterIsInstance<PyRouteFacts>().filter { it.providerId == providerId }
         val entries = entries(files, providerId)
-        if (entries.isEmpty()) return direct
-        val evaluator = ExprEvaluator(ModuleTable(entries))
-        return direct + entries.map { FileResolver(it, evaluator).resolve() }
+        if (entries.isEmpty()) return Resolution(direct, emptyMap())
+        val collector = SettingsCollector()
+        val evaluator = ExprEvaluator(ModuleTable(entries), SettingsContext(PinEnv.of(files).values, collector))
+        return Resolution(direct + entries.map { FileResolver(it, evaluator).resolve() }, collector.suggestions)
     }
 
     /** The modules that resolving [files] would still need to read, see [ModuleWalk]. */

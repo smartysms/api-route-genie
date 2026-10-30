@@ -48,6 +48,7 @@ import com.routegenie.ui.design.RouteGenieIcons
 import com.routegenie.ui.design.ToolbarStyle
 import com.routegenie.ui.gutter.RouteGutterIndex
 import com.routegenie.ui.model.EndpointIndex
+import com.routegenie.ui.pins.PinsBar
 import com.routegenie.ui.request.RequestSection
 import com.routegenie.ui.model.EndpointQuery
 import com.routegenie.ui.model.EndpointTree
@@ -153,13 +154,17 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
     }
 
     private lateinit var topBar: JComponent
+    private val pinsBar = PinsBar(project, this)
+    private val north = JPanel(BorderLayout())
     private lateinit var listSplitter: OnePixelSplitter
 
     init {
         Disposer.register(parent, this)
         buildCards()
         topBar = buildTop()
-        add(topBar, BorderLayout.NORTH)
+        north.add(topBar, BorderLayout.NORTH)
+        north.add(pinsBar, BorderLayout.SOUTH)
+        add(north, BorderLayout.NORTH)
         val splitter = OnePixelSplitter(true, UiKeys.SPLITTER, Limits.DETAILS_SPLIT_PROPORTION).apply {
             firstComponent = cards
             secondComponent = details
@@ -305,6 +310,7 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
     /** Hides or shows the filter bar and the list so the details area (the request workspace) gets the whole window. */
     internal fun setListVisible(visible: Boolean) {
         topBar.isVisible = visible
+        north.isVisible = visible
         listSplitter.firstComponent = if (visible) cards else null
         listSplitter.revalidate()
     }
@@ -424,6 +430,7 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
         } finally {
             applying = false
         }
+        pinsBar.update(view.snapshot)
         showCard(
             when {
                 view.snapshot.generation == 0L -> CARD_LOADING
@@ -516,6 +523,8 @@ class EndpointsPanel(private val project: Project, parent: Disposable) :
     // ---- test hooks ----------------------------------------------------------------------------------------------
 
     internal fun selectedKey(): String? = selectedEndpoint?.key
+
+    internal fun pinsBarForTest(): PinsBar = pinsBar
 
     internal fun setQueryForTest(text: String) {
         searchField.text = text

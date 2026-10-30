@@ -2,6 +2,7 @@ package com.routegenie.frameworks.fastapi
 
 import com.routegenie.discovery.FileFacts
 import com.routegenie.discovery.LinkResult
+import com.routegenie.discovery.core.SettingTally
 import com.routegenie.frameworks.common.LinkSupport
 import com.routegenie.frameworks.common.Primitive
 import com.routegenie.frameworks.common.PrimitiveKind
@@ -68,10 +69,19 @@ internal object FastApiLinker {
     private class Blocker(val code: DiagnosticCode, val source: SourceRef? = null)
 
     /** What accumulates from an application down to a route. */
-    private class Acc(val path: StrValue, val tags: List<String>, val deprecated: Boolean, val blocker: Blocker?)
+    private class Acc(
+        val path: StrValue,
+        val tags: List<String>,
+        val deprecated: Boolean,
+        val blocker: Blocker?,
+        /** The settings this path was built from and where each is written, so a hidden route can be counted under them. */
+        val uses: List<Pair<String, SourceRef>> = emptyList(),
+    )
 
     fun link(facts: Collection<FileFacts>): LinkResult {
-        val files = PyResolver.resolve(facts, FastApiCatalog.PROVIDER_ID).sortedBy { it.path }
+        val resolution = PyResolver.resolveAll(facts, FastApiCatalog.PROVIDER_ID)
+        val files = resolution.facts.sortedBy { it.path }
+        val tally = SettingTally(resolution.suggestions)
         val index = PyModuleIndex(files)
         val diagnostics = LinkedHashSet<Diagnostic>()
         val endpoints = LinkedHashMap<String, Endpoint>()
@@ -165,20 +175,28 @@ internal object FastApiLinker {
         for (node in nodes.values) {
             if (node.hasIncoming) continue
             val blocker = if (node.isApp) null else Blocker(DiagnosticCode.UNATTACHED_ROUTER)
-            expand(node, Acc(LinkSupport.EMPTY, emptyList(), false, blocker), hashSetOf(node.symbol.key), endpoints, diagnostics)
+            expand(node, Acc(LinkSupport.EMPTY, emptyList(), false, blocker), hashSetOf(node.symbol.key), endpoints, diagnostics, tally)
         }
         for (route in orphans) {
             diagnostics += LinkSupport.diagnostic(DiagnosticCode.UNRESOLVED_RECEIVER, LinkSupport.sourceOf(route.file, route.pos))
         }
-        return LinkResult(endpoints.values.toList(), diagnostics.toList())
+        return LinkResult(endpoints.values.toList(), diagnostics.toList(), tally.result(Framework.FASTAPI))
     }
 
-    private fun expand(node: Node, acc: Acc, chain: MutableSet<String>, endpoints: MutableMap<String, Endpoint>, diagnostics: MutableSet<Diagnostic>) {
+    private fun expand(
+        node: Node,
+        acc: Acc,
+        chain: MutableSet<String>,
+        endpoints: MutableMap<String, Endpoint>,
+        diagnostics: MutableSet<Diagnostic>,
+        tally: SettingTally,
+    ) {
         val base = Acc(
             acc.path + node.prefix, acc.tags + node.tags, acc.deprecated || node.deprecated,
             acc.blocker ?: dynamicPrefix(node.prefix, node.source, diagnostics),
+            acc.uses + LinkSupport.usesOf(node.prefix, node.source),
         )
-        for (route in node.routes) emit(route, base, endpoints, diagnostics)
+        for (route in node.routes) emit(route, base, endpoints, diagnostics, tally)
         for (edge in node.edges) {
             if (!chain.add(edge.child.symbol.key)) {
                 diagnostics += LinkSupport.diagnostic(DiagnosticCode.INCLUDE_CYCLE, edge.source)
@@ -187,8 +205,9 @@ internal object FastApiLinker {
             val next = Acc(
                 base.path + edge.prefix, base.tags + edge.tags, base.deprecated || edge.deprecated,
                 base.blocker ?: dynamicPrefix(edge.prefix, edge.source, diagnostics),
+                base.uses + LinkSupport.usesOf(edge.prefix, edge.source),
             )
-            expand(edge.child, next, chain, endpoints, diagnostics)
+            expand(edge.child, next, chain, endpoints, diagnostics, tally)
             chain.remove(edge.child.symbol.key)
         }
     }
@@ -200,19 +219,24 @@ internal object FastApiLinker {
         return Blocker(DiagnosticCode.DYNAMIC_PREFIX, source)
     }
 
-    private fun emit(route: Route, acc: Acc, endpoints: MutableMap<String, Endpoint>, diagnostics: MutableSet<Diagnostic>) {
+    private fun emit(route: Route, acc: Acc, endpoints: MutableMap<String, Endpoint>, diagnostics: MutableSet<Diagnostic>, tally: SettingTally) {
         val source = LinkSupport.sourceOf(route.file, route.pos)
         val methods = route.methods
-        if (acc.blocker?.source != null) return
+        val joined = acc.path + route.path
+        if (acc.blocker?.source != null) {
+            tally.hitAll(acc.uses + LinkSupport.usesOf(route.path, source))
+            return
+        }
         val omit = acc.blocker?.code ?: when {
             methods == null || !route.path.isExact -> DiagnosticCode.DYNAMIC_VALUE
             else -> null
         }
         if (omit != null || methods == null) {
+            if (acc.blocker == null && !joined.isExact) tally.hitAll(acc.uses + LinkSupport.usesOf(route.path, source))
             diagnostics += Diagnostic(Severity.WARNING, omit ?: DiagnosticCode.DYNAMIC_VALUE, source = source)
             return
         }
-        val text = LinkSupport.displayPath(acc.path + route.path)
+        val text = LinkSupport.displayPath(joined)
         val params = PATH_PARAM.findAll(text).map { PathParam(it.groupValues[1], it.groupValues[2].ifEmpty { null }) }.toList()
         val tags = (acc.tags + route.tags).distinct()
         val deprecated = route.deprecated ?: acc.deprecated
@@ -227,6 +251,7 @@ internal object FastApiLinker {
                 tags = tags,
                 pathParams = params,
                 deprecated = deprecated,
+                pins = joined.pins,
             )
             endpoints.putIfAbsent(endpoint.declarationKey, endpoint)
         }

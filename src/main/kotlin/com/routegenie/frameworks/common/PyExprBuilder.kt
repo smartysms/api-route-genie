@@ -17,6 +17,7 @@ import com.jetbrains.python.psi.PyPlainStringElement
 import com.jetbrains.python.psi.PyReferenceExpression
 import com.jetbrains.python.psi.PyStarArgument
 import com.jetbrains.python.psi.PyStringLiteralExpression
+import com.jetbrains.python.psi.PySubscriptionExpression
 import com.jetbrains.python.psi.PyTargetExpression
 import com.jetbrains.python.psi.PyTupleExpression
 import com.routegenie.discovery.core.Add
@@ -32,6 +33,8 @@ import com.routegenie.discovery.core.Lit
 import com.routegenie.discovery.core.Opaque
 import com.routegenie.discovery.core.Percent
 import com.routegenie.discovery.core.Ref
+import com.routegenie.discovery.core.SettingRead
+import com.routegenie.discovery.core.SettingsCatalog
 import com.routegenie.discovery.core.StarBinding
 
 /**
@@ -51,7 +54,8 @@ object PyExprBuilder {
             is PyStringLiteralExpression -> string(e)
             is PyNumericLiteralExpression -> if (e.isIntegerLiteral) IntLit(e.bigIntegerValue.toString()) else Opaque
             is PyBinaryExpression -> binary(e)
-            is PyCallExpression -> format(e)
+            is PyCallExpression -> settingCall(e) ?: format(e)
+            is PySubscriptionExpression -> settingSubscript(e) ?: Opaque
             is PyReferenceExpression -> reference(e)
             else -> Opaque
         }
@@ -138,6 +142,47 @@ object PyExprBuilder {
             }
         }
         return Format(build(qualifier), positional, named)
+    }
+
+    // --- settings: the environment and config mappings ---------------------------------------------------------------
+
+    /** The text of a plain (not f-string, not bytes) string literal, or null. */
+    private fun plainString(e: PyExpression?): String? {
+        val literal = (e as? PyStringLiteralExpression) ?: return null
+        val elements = literal.stringElements
+        if (elements.isEmpty() || !elements.all { it is PyPlainStringElement && !it.prefix.contains('b', ignoreCase = true) }) return null
+        return literal.stringValue
+    }
+
+    /**
+     * `os.environ.get("X", default)`, `os.getenv("X")` and `<config>.get("X", default)` as a [SettingRead]; null for any other
+     * call. The default is kept as written; whether it may be suggested is decided later (only a literal is).
+     */
+    private fun settingCall(call: PyCallExpression): Expr? {
+        val callee = call.callee as? PyReferenceExpression ?: return null
+        val parts = dottedParts(callee) ?: return null
+        val positional = call.arguments.filter { it !is PyKeywordArgument && it !is PyStarArgument }
+        val key = plainString(positional.firstOrNull()) ?: return null
+        val default = positional.getOrNull(1)
+            ?: call.arguments.filterIsInstance<PyKeywordArgument>().firstOrNull { it.keyword == "default" }?.valueExpression
+        val canonical = when {
+            parts in SettingsCatalog.ENV_CALLS -> SettingsCatalog.envCanonical(key)
+            parts.size >= 2 && parts.last() == "get" && parts[parts.size - 2] in SettingsCatalog.CONFIG_MAPPING_LAST ->
+                SettingsCatalog.configCanonical(parts.dropLast(1), key)
+            else -> return null
+        }
+        return SettingRead(canonical, default?.let { build(it) })
+    }
+
+    /** `os.environ["X"]`, `app.config["X"]`, `settings["X"]`. */
+    private fun settingSubscript(e: PySubscriptionExpression): Expr? {
+        val parts = dottedParts(e.operand) ?: return null
+        val key = plainString(e.indexExpression) ?: return null
+        return when {
+            parts in SettingsCatalog.ENV_MAPPINGS -> SettingRead(SettingsCatalog.envCanonical(key), null)
+            parts.last() in SettingsCatalog.CONFIG_MAPPING_LAST -> SettingRead(SettingsCatalog.configCanonical(parts, key), null)
+            else -> null
+        }
     }
 
     private fun reference(ref: PyReferenceExpression): Expr {

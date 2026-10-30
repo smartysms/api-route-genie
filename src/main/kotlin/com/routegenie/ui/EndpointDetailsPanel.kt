@@ -11,6 +11,8 @@ import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import com.routegenie.RouteGenieBundle
 import com.routegenie.model.Endpoint
+import com.routegenie.pinside.PinsService
+import com.routegenie.ui.pins.PinsDialog
 import com.routegenie.ui.design.BadgeState
 import com.routegenie.ui.design.Chip
 import com.routegenie.ui.design.DesignTokens
@@ -101,6 +103,13 @@ class OverviewSection(private val project: Project) : EndpointDetailsSection {
     private val routeName = grid.addRow(RouteGenieBundle.message("details.route_name"), KeyValueGrid.valueLabel(mono = true))
     private val sourceLink = ActionLink("") { navigate() }
     private val source = grid.addRow(RouteGenieBundle.message("details.source"), sourceLink)
+
+    /** One line per pin this path was built with: "Prefix taken from your pin settings.X = /api/v1" and a link to change it. */
+    private val pinLines = JPanel().apply {
+        isOpaque = false
+        layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.Y_AXIS)
+    }
+    private val pinRow = grid.addRow(RouteGenieBundle.message("pins.details.label"), pinLines)
 
     private val navigateLink = ActionLink(RouteGenieBundle.message("action.navigate")) { navigate() }.apply {
         icon = AllIcons.Actions.EditSource
@@ -209,7 +218,24 @@ class OverviewSection(private val project: Project) : EndpointDetailsSection {
         routeName.isVisible = name.isNotEmpty()
         sourceLink.text = endpoint.source.toString()
         source.isVisible = true
+        showPins(endpoint)
         cards.show(root, CARD_DETAILS)
+    }
+
+    private fun showPins(endpoint: Endpoint) {
+        pinLines.removeAll()
+        val values = PinsService.getInstance(project).snapshot.value.byExpression
+        for (expression in endpoint.pins) {
+            val text = RouteGenieBundle.message("pins.details.text", expression, values[expression]?.value ?: "")
+            pinLines.add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(Space.M), 0)).apply {
+                isOpaque = false
+                alignmentX = java.awt.Component.LEFT_ALIGNMENT
+                add(JBLabel(text).apply { foreground = Palette.textPrimary })
+                add(ActionLink(RouteGenieBundle.message("pins.details.change")) { PinsDialog(project).show() })
+            })
+        }
+        pinRow.isVisible = endpoint.pins.isNotEmpty()
+        pinLines.revalidate()
     }
 
     private fun KeyValueRow.valueLabel(): JBLabel = value as JBLabel

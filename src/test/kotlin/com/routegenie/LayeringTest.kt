@@ -7,7 +7,7 @@ import java.io.File
 
 /** The pure layers must stay free of the IDE and Swing, so their tests run in milliseconds without a platform. */
 class LayeringTest {
-    private val pureLayers = listOf("model", "client", "openapi", "ui/model", "schema/model", "json", "files")
+    private val pureLayers = listOf("model", "client", "openapi", "ui/model", "schema/model", "json", "files", "pins")
     private val forbidden = listOf("com.intellij", "com.jetbrains", "java.awt", "javax.swing")
 
     /** java.awt.image (BufferedImage and friends) is plain data and works headless; the generated-file package needs it. */
@@ -30,7 +30,7 @@ class LayeringTest {
     /** The linker side of discovery: facts, expression evaluation, module resolution and the three linkers. */
     private val pureLinkerFiles = listOf(
         "discovery/core/Expr.kt", "discovery/core/ExprEvaluator.kt", "discovery/core/ModuleModel.kt", "discovery/core/ModuleWalk.kt",
-        "discovery/core/FactsCache.kt",
+        "discovery/core/FactsCache.kt", "discovery/core/SettingsModel.kt", "discovery/core/SettingsIndex.kt",
         "frameworks/common/PyFacts.kt", "frameworks/common/PyResolver.kt", "frameworks/common/PyModuleIndex.kt",
         "frameworks/common/LinkSupport.kt", "frameworks/common/Primitives.kt", "frameworks/common/PyExtractionSpec.kt",
         "frameworks/django/DjangoFacts.kt", "frameworks/django/DjangoFile.kt", "frameworks/django/DjangoLinker.kt",

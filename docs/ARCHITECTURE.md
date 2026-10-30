@@ -82,6 +82,60 @@ check replaces it.
 - The response on screen is owned by `RouteGenieClientService.responses` (`ResponseSlot`). `SendController` tells the viewers to let go (`Listener.releasing`) before it replaces or drops the response, so a spilled file is never deleted under a reader.
 - The JSON body goes to `JsonViewerPanel` (`ResponseJson` decides memory, spill file or cut); everything else, streams and failures keep the plain views.
 
+## Pins: values the code takes from a setting
+
+Some URL prefixes cannot be known statically: `app.include_router(api_router, prefix=settings.API_V1_STR)` (the official FastAPI
+template), `path(settings.BASE_PATH, include(...))` (NetBox), `url_prefix=app.config["API_PREFIX"]`, `os.environ.get("P", "/p")`.
+"Correct or absent" still holds: the endpoints below such a piece are omitted until the user confirms the value once. That
+confirmation is a **pin**.
+
+```
+ facts (context-free)           link (pure)                                   snapshot                 window
+ --------------------           -----------                                   --------                 ------
+ settings classes, instances -> ExprEvaluator(pins, collector)             -> endpoints (pins=[...]) -> PinsBar: one strip per
+ SettingRead(os.environ[..])    unresolved name -> StrValue.Unknown             settings (unresolved)     expression, "Not now" line
+ attribute defaults             (unresolved=[expression])                                              details: "taken from your pin"
+                                linker tallies the routes it had to omit
+ pins.json -> PinsService -> PinEnv (plain data, one more item of the facts passed to link)
+```
+
+- **Detection** is data, not per-framework code. `PyExprBuilder` turns `os.environ.get/getenv/[]`, `<x>.config[...]` and
+  `<x>.config.get(...)` into `SettingRead(canonical, default)`; `PyFactsExtractor` records classes whose name or base contains
+  `Settings`/`Config` (attributes with `X = lit`, `X: T = lit`, `Field(default=...)`, `Field(default_factory=...)`), module level
+  `settings = Settings()` / `get_settings()` and `def get_settings(): return Settings()`. Names that identify a settings object are in
+  `SettingsCatalog`. They only classify; no value is ever taken from a name.
+- **Evaluation**: `ExprEvaluator` gets a `SettingsContext(pins, collector)`. A reference that nothing in the project defines is first
+  looked up in the pins (key = the expression as written, `settings.API_V1_STR`), then followed through imports and factories to a
+  class attribute (`SettingsIndex`, bounded depth). It stays `StrValue.Unknown` with the expression in `unresolved`; with a pin it is
+  `Known(value, pins=[expression])`. `StrValue` carries both lists through `+`, so the three linkers need no new rules.
+- **Suggestions** are only literals the code states: a class attribute default, `Field(default="...")`, or the literal second
+  argument of `os.environ.get` / `os.getenv` / `config.get`. `default_factory`, computed defaults, names and conflicting literals give
+  none. The suggestion says where it was read (file and line).
+- **Counting**: each linker tallies, per expression, the routes it had to omit (`SettingTally`): FastAPI and Flask at `emit` (the
+  blocker of an include with a computed prefix, or a path piece), Django by walking an include once with unresolved settings
+  assumed empty and discarding the result (`assumeEmpty`). An expression that hides no route (dead code, a router never included, an
+  include without routes) is not reported. `RouteSnapshot.settings` holds the result, most routes first, bounded.
+- **Not settings**: `ROOT_URLCONF` and the module name of an `include("...")` are evaluated with the settings machinery off
+  (`evaluate(..., settings = false)`), so a pin can never change them.
+- **Endpoints** resolved through a pin carry `Endpoint.pins`. The field is not part of `key` or `declarationKey`: identity is the
+  resolved path and the declaration, so selection, history and saved request state survive pinning and unpinning.
+- **The store** is `<project>/<Branding.DIR>/pins.json` (`PinsCodec`: version, one sorted pin per line, no secrets; `PinRules`
+  refuses names with the words password, secret, token, key, credential and bad values). `PinsService` reads it lazily, applies external
+  edits through a VFS listener, writes atomically (temporary file in the same folder, atomic move) after re-reading the file and
+  merging into what is on disk, and never overwrites a file it cannot read (broken JSON, newer version, too large). A missing, empty
+  or hand-edited file is not an error; a broken one is no pins plus one message in the window.
+- **Refresh**: `PinsService` calls `RouteDiscoveryService.requestRefresh()` when the pin map changes, so the usual debounce batches
+  many changes. `RouteDiscoveryEngine` reads the pins at every pass (`pins` supplier) and keeps them in its memo: equal pins and equal
+  facts mean no link and no publish; a changed pin relinks and reads no file again.
+- **Asking**: `PinsBar` sits under the toolbar. One strip per unresolved expression with a pinnable name, at most
+  `Limits.PINS_MAX_STRIPS`, most routes first. "Use" saves the written default in one click (a default that breaks the rules opens the
+  editor with the message instead), "Enter another value" shows a field with the same validation, "Not now" hides the strip until the
+  IDE restarts (kept in `PinsService.dismissed`, never in the file). Whatever has no strip (dismissed, beyond the limit, secret-looking)
+  stays in one collapsed line "N routes are hidden by unresolved URL prefixes". Nothing is applied without a click. The pins view
+  (`PinsPanel`, Tools | Edit Pins or the Settings page link) lists, edits and deletes pins and marks unused ones.
+- Limits: a pin is valid for the whole project; two modules that use the same expression share the pin. A setting read through a
+  name the evaluator cannot follow (`getattr`, a dict built at runtime) is not recognized and stays an ordinary dynamic value.
+
 ## Leak tests
 
 Weak-reference tests must not keep the object in a local variable of the test method: the interpreter keeps the locals of a running frame alive as GC roots, so the object looks leaked although nothing in the plugin holds it. Build the scenario in a separate function that returns only `WeakReference`s (see `WindowLeakTest`). The earlier finding "a disposed EndpointsPanel is not collected (about 250 KB per window)" was this effect: bisecting the panel (create, show, load, select, send, compare, environment editor) shows every part collectable, and 40 cycles of the whole window with endpoints grow the heap by less than the 3 MB limit.

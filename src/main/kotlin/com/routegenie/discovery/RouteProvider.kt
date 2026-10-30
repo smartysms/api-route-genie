@@ -7,6 +7,7 @@ import com.intellij.psi.PsiFile
 import com.routegenie.Ids
 import com.routegenie.model.Diagnostic
 import com.routegenie.model.Endpoint
+import com.routegenie.model.UnresolvedSetting
 
 /**
  * What one extraction of one file produced. Context-free: it is derived from the text of that file alone (unevaluated
@@ -32,7 +33,12 @@ interface FileFacts {
 data class LocatedFacts(override val path: String, val source: SourceFacts, val sourceRoot: String = "") : FileFacts
 
 /** What linking produced: the endpoints, and anything that could not be resolved. */
-data class LinkResult(val endpoints: List<Endpoint>, val diagnostics: List<Diagnostic> = emptyList())
+data class LinkResult(
+    val endpoints: List<Endpoint>,
+    val diagnostics: List<Diagnostic> = emptyList(),
+    /** Settings without a pin that hide routes (see [UnresolvedSetting]); empty for providers that have none. */
+    val settings: List<UnresolvedSetting> = emptyList(),
+)
 
 /**
  * Adds the routes of one framework family to the endpoint list. Pipeline:

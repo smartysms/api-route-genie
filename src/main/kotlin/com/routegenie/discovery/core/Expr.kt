@@ -31,6 +31,13 @@ data class Percent(val format: Expr, val args: List<Expr>) : Expr
 /** `template.format(*positional, **named)`. */
 data class Format(val template: Expr, val positional: List<Expr>, val named: Map<String, Expr>) : Expr
 
+/**
+ * A read of a setting that only the running process knows: `os.environ.get("X", "/d")`, `os.getenv("X")`, `os.environ["X"]`,
+ * `app.config["X"]`. [canonical] is the one text used to pin it (`os.environ["X"]`); [default] is the written default.
+ * Without a pin it evaluates to unknown, like any dynamic value.
+ */
+data class SettingRead(val canonical: String, val default: Expr?) : Expr
+
 /** Anything this evaluator never reads (calls, subscripts, bytes, floats, ...): the value is unknown. */
 data object Opaque : Expr
 
@@ -40,6 +47,7 @@ data object Hole : Expr
 /** Number of nodes in the tree; used to estimate the memory of cached facts. */
 fun Expr.nodeCount(): Int = when (this) {
     is Lit, is IntLit, Opaque, Hole -> 1
+    is SettingRead -> 1 + (default?.nodeCount() ?: 0)
     is Ref -> 1 + parts.size
     is Add -> 1 + left.nodeCount() + right.nodeCount()
     is FStr -> 1 + parts.sumOf { it.nodeCount() }
@@ -57,6 +65,7 @@ fun Expr.collectRefs(out: MutableCollection<List<String>>) {
         is Interp -> value.collectRefs(out)
         is Percent -> { format.collectRefs(out); args.forEach { it.collectRefs(out) } }
         is Format -> { template.collectRefs(out); positional.forEach { it.collectRefs(out) }; named.values.forEach { it.collectRefs(out) } }
+        is SettingRead -> default?.collectRefs(out)
         is Lit, is IntLit, Opaque, Hole -> Unit
     }
 }

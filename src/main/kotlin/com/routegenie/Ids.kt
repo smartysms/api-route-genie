@@ -11,6 +11,7 @@ object Ids {
     const val ACTION_SELECT_IN_WINDOW = "RouteGenie.SelectInWindow"
     const val ACTION_SEND_REQUEST = "RouteGenie.SendRequest"
     const val ACTION_COPY_CURL = "RouteGenie.CopyAsCurl"
+    const val ACTION_EDIT_PINS = "RouteGenie.EditPins"
 
     /** Settings page (Settings | Tools). */
     const val CONFIGURABLE = "RouteGenie.Settings"
@@ -23,7 +24,7 @@ object Ids {
 
     val TOOL_WINDOWS = setOf(TOOL_WINDOW)
     val NOTIFICATION_GROUPS = setOf(NOTIFICATION_GROUP)
-    val ACTIONS = setOf(ACTION_OPEN_WINDOW, ACTION_SELECT_IN_WINDOW, ACTION_SEND_REQUEST, ACTION_COPY_CURL)
+    val ACTIONS = setOf(ACTION_OPEN_WINDOW, ACTION_SELECT_IN_WINDOW, ACTION_SEND_REQUEST, ACTION_COPY_CURL, ACTION_EDIT_PINS)
     val CONFIGURABLES = setOf(CONFIGURABLE)
     val EXTENSION_POINTS = setOf(EP_ROUTE_PROVIDER)
 

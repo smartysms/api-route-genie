@@ -26,6 +26,11 @@ data class Endpoint(
     val problems: List<Diagnostic> = emptyList(),
     /** Position among endpoints that are otherwise identical (same method, path, file and handler); see [EndpointKeys]. */
     val ordinal: Int = 0,
+    /**
+     * Expressions of pinned settings (`settings.API_V1_STR`) whose user-confirmed value is part of [path]. Not part of the
+     * identity: [key] only changes through the resolved path.
+     */
+    val pins: List<String> = emptyList(),
 ) {
     val isPartial: Boolean get() = problems.isNotEmpty()
 

@@ -1,6 +1,8 @@
 package com.routegenie
 
 import com.routegenie.model.DiagnosticCode
+import com.routegenie.pins.PinProblem
+import com.routegenie.pins.PinsFileProblem
 import com.routegenie.testing.ProjectFiles
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,7 +44,8 @@ class CentralizationTest {
     @Test
     fun `every key in the bundle is used`() {
         val keys = ProjectFiles.properties(bundleFile).stringPropertyNames()
-        val derived = DiagnosticCode.entries.map { it.bundleKey }.toSet()
+        val derived = (DiagnosticCode.entries.map { it.bundleKey } + PinProblem.entries.map { it.bundleKey } +
+            PinsFileProblem.entries.map { it.bundleKey }).toSet()
         val allText = sources.values.joinToString("\n")
         val dead = keys.filter { it !in derived && !allText.contains("\"$it\"") }.sorted()
         assertTrue("Unused keys in RouteGenieBundle.properties:\n${dead.joinToString("\n")}", dead.isEmpty())

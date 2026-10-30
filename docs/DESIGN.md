@@ -31,6 +31,7 @@ HiDPI screens. This page is for contributors: the rules, the pieces and how they
 | `StatusPill(code, label)`, `Chip(text, tone)`, `ChipPainter` | pills tinted by status class; tags as outlined chips (a hue-less tint would not pass the contrast check), tone chips tinted; `ChipPainter` draws chips inside renderers |
 | `SectionHeader`, `Divider`, `KeyValueGrid`/`KeyValueRow` | structure of a page: title with optional trailing component, hairlines, aligned label/value rows |
 | `EmptyState`, `LoadingRow`, `SkeletonRows`, `LoadingState` | full-page states and the loading placeholders (static, no timers) |
+| `NoticeStrip(tone, content)` | a slim notice above content: raised background, a tone stripe on the left, a hairline below; used by the pins strip (warning) and the hidden-routes line (info) |
 | `RowPainter`, `RowState` | background of a row in a custom list: hover, selection, inactive selection |
 | `ToolbarStyle` | one way to create toolbars and a raised bar with a filter field |
 | `RouteGenieIcons` | all icons; `/icons/design/<name>.svg` with `<name>_dark.svg` beside it |
