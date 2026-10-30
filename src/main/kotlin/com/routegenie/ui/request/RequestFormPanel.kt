@@ -164,6 +164,12 @@ class RequestFormPanel(
     internal val bodyEditor = EditorTextField(bodyDocument, project, jsonType(), false, false).apply {
         setPlaceholder(msg("req.body.placeholder"))
         setFontInheritedFromLAF(false)
+        // A multi-line EditorTextField is made to sit in a scroll pane and shows no scrollbars of its own, so a long body could
+        // neither be scrolled with the wheel nor reached with the bars. Its editor gets both bars, like the response viewer.
+        addSettingsProvider { editor ->
+            editor.setVerticalScrollbarVisible(true)
+            editor.setHorizontalScrollbarVisible(true)
+        }
     }
     private val bodyCards = JPanel(CardLayout())
     private val generate = JButton(msg("req.body.generate")).apply { toolTipText = msg("req.body.generate.tooltip") }
