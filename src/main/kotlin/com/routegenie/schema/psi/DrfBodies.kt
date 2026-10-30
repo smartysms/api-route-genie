@@ -23,7 +23,18 @@ internal class DrfBodies(private val mapper: TypeMapper) {
     private val symbols = session.symbols
     private val scan = ViewScan(mapper)
 
+    /** The view class and handler of the endpoint being read; only the parser check of a file body looks at them. */
+    private var viewClass: PyClass? = null
+    private var viewHandler: PyFunction? = null
+
     fun extract(target: Target, verb: HttpMethod): BodyResult {
+        when (target) {
+            is Target.Function -> viewHandler = target.fn
+            is Target.Member -> {
+                viewClass = target.cls
+                viewHandler = target.method ?: projectHandler(target.cls, target.member, verb)
+            }
+        }
         return when (target) {
             is Target.Function -> fromFunction(target.fn, verb)
             is Target.Member -> fromView(target, verb)
@@ -198,15 +209,73 @@ internal class DrfBodies(private val mapper: TypeMapper) {
         }
         val serializers = DrfSerializers(mapper, partial)
         val ref = serializers.ref(cls)
-        if (serializers.sawFile) return BodyResult.Unsupported(Gap.NOT_REPRESENTABLE, "${cls.name} has a file field")
         serializers.undetermined?.let { return BodyResult.Unsupported(Gap.NO_SCHEMA_DECLARED, it) }
-        return BodyResult.Found(BodyEncoding.JSON, if (many) Schema.arrayOf(ref) else ref)
+        val schema = if (many) Schema.arrayOf(ref) else ref
+        if (!serializers.sawFile) return BodyResult.Found(BodyEncoding.JSON, schema)
+        // A serializer with a file field is read from a multipart body, which the view's parsers must accept.
+        parserRefusal()?.let { return BodyResult.Unsupported(Gap.UNSUPPORTED_BODY, "${cls.name} has a file field but $it") }
+        return BodyResult.Found(BodyEncoding.MULTIPART, schema)
+    }
+
+    // --- Parsers ---------------------------------------------------------------------------------------------------------------
+
+    /**
+     * Why the view cannot take multipart, or null when it can (or declares no parsers: DRF's default accepts it; a different
+     * `DEFAULT_PARSER_CLASSES` in the settings is not read). Looks at `@parser_classes([...])` and `@action(parser_classes=...)`
+     * on the handler first, then at the `parser_classes` attribute of the view class.
+     */
+    private fun parserRefusal(): String? {
+        val (expression, file) = declaredParsers() ?: return null
+        val items = PyLiterals.elements(expression) ?: return "its parser_classes is not a literal list"
+        var known = true
+        for (item in items) {
+            when (val sym = symbols.resolve(item, file)) {
+                is Sym.Lib -> if (sym.name == MULTIPART_PARSER) return null else if (!sym.name.startsWith(PARSERS_PREFIX)) known = false
+                is Sym.Cls -> {
+                    val bases = mapper.hierarchy.info(sym.cls).libraryBases
+                    if (MULTIPART_PARSER in bases) return null
+                    if (bases.none { it.startsWith(PARSERS_PREFIX) }) known = false
+                }
+                else -> known = false
+            }
+        }
+        return if (known) "its parser_classes accept no multipart" else "its parser_classes cannot be read"
+    }
+
+    private fun declaredParsers(): Pair<PyExpression, PyFile>? {
+        val handler = viewHandler
+        val handlerFile = handler?.containingFile as? PyFile
+        if (handler != null && handlerFile != null) {
+            for (decorator in handler.decoratorList?.decorators.orEmpty()) {
+                val name = symbols.libName(decorator.callee, handlerFile)
+                val value = when (name) {
+                    PARSER_DECORATOR -> PyLiterals.positional(decorator).firstOrNull()
+                    DrfSchemaCatalog.actionDecorator -> PyLiterals.keyword(decorator, PARSER_CLASSES)
+                    else -> null
+                }
+                if (value != null) return value to handlerFile
+            }
+        }
+        val cls = viewClass ?: return null
+        for (c in mapper.hierarchy.baseFirst(cls).asReversed()) {
+            val file = c.containingFile as? PyFile ?: continue
+            for (statement in c.statementList.statements) {
+                val assignment = statement as? PyAssignmentStatement ?: continue
+                if ((assignment.targets.singleOrNull() as? PyTargetExpression)?.name != PARSER_CLASSES) continue
+                return (assignment.assignedValue ?: continue) to file
+            }
+        }
+        return null
     }
 
     private companion object {
         val BODY_ATTRIBUTES = setOf(DrfSchemaCatalog.REQUEST_DATA)
         const val PARTIAL_UPDATE = DjangoCatalog.ACTION_PARTIAL_UPDATE
         const val SUPER_CALL = "super("
+        const val PARSER_CLASSES = "parser_classes"
+        const val PARSER_DECORATOR = "rest_framework.decorators.parser_classes"
+        const val PARSERS_PREFIX = "rest_framework.parsers."
+        const val MULTIPART_PARSER = "rest_framework.parsers.MultiPartParser"
         val BODY_ACTIONS = setOf(DjangoCatalog.ACTION_CREATE, DjangoCatalog.ACTION_UPDATE, PARTIAL_UPDATE)
     }
 }

@@ -46,12 +46,13 @@ internal object DrfSchemaCatalog {
         put(FieldKind.LIST, "ListField")
         put(FieldKind.DICT, "DictField", "HStoreField")
         put(FieldKind.JSON, "JSONField")
-        put(FieldKind.FILE, "FileField", "ImageField", "FilePathField")
+        put(FieldKind.FILE, "FileField")
+        put(FieldKind.IMAGE, "ImageField")
         put(FieldKind.EXCLUDED, "SerializerMethodField", "ReadOnlyField", "HiddenField", "HyperlinkedIdentityField", "StringRelatedField")
         put(FieldKind.PK_RELATED, "PrimaryKeyRelatedField")
         put(FieldKind.SLUG_RELATED, "SlugRelatedField")
         put(FieldKind.URL_RELATED, "HyperlinkedRelatedField")
-        put(FieldKind.UNSUPPORTED, "ModelField", "ManyRelatedField")
+        put(FieldKind.UNSUPPORTED, "ModelField", "ManyRelatedField", "FilePathField")
     }
 
     // --- Views ------------------------------------------------------------------------------------------------------------
@@ -99,8 +100,9 @@ internal class DrfSerializers(private val mapper: TypeMapper, private val partia
     private val symbols = session.symbols
     private val options = OptionReader(mapper)
     private val models = DjangoModels(mapper, options)
+    private val files = FileFields(mapper)
 
-    /** True when a field that needs multipart (a file) was met: the body then cannot be a template. */
+    /** True when a file field was met: the body is then `multipart/form-data`. */
     var sawFile = false
         private set
 
@@ -226,7 +228,7 @@ internal class DrfSerializers(private val mapper: TypeMapper, private val partia
             session.skipped(where, Gap.UNSUPPORTED_FIELD)
             return null
         }
-        return assemble(where, field.kind, opts, field.call, field.file, field.serializer, relationPk = relationPk(field))
+        return assemble(where, field.kind, opts, field.call, field.file, field.serializer, relationPk = relationPk(field), fileCall = field.call)
     }
 
     private fun modelProperty(where: String, field: ModelField, extra: Map<String, PyExpression>?, readOnlyListed: Boolean, depth: Int, hyperlinked: Boolean): Prop? {
@@ -245,7 +247,7 @@ internal class DrfSerializers(private val mapper: TypeMapper, private val partia
             if (PyLiterals.bool(field.keyword("blank")) != true) opts.allowEmpty = false
         }
         val childField = if (kind == FieldKind.LIST) arrayChild(field) else null
-        return assemble(where, kind, opts, null, field.file, null, relationPk = if (kind == FieldKind.PK_RELATED) modelPk(field) else null, listChild = childField)
+        return assemble(where, kind, opts, null, field.file, null, relationPk = if (kind == FieldKind.PK_RELATED) modelPk(field) else null, listChild = childField, fileCall = field.call)
     }
 
     private fun applyExtra(opts: FieldOpts, extra: Map<String, PyExpression>?) {
@@ -296,6 +298,7 @@ internal class DrfSerializers(private val mapper: TypeMapper, private val partia
         serializer: PyClass?,
         relationPk: Schema? = null,
         listChild: Schema? = null,
+        fileCall: PyCallExpression? = null,
     ): Prop? {
         if (opts.unresolved != null) {
             session.skipped(where, Gap.UNSUPPORTED_FIELD)
@@ -312,14 +315,11 @@ internal class DrfSerializers(private val mapper: TypeMapper, private val partia
                 if (opts.many) Schema.arrayOf(pk).copy(minItems = if (opts.allowEmpty == false) 1 else null) else pk
             }
             FieldKind.LIST -> {
-                val child = listChild ?: call?.let { childOf(it, file) }
+                val child = listChild ?: call?.let { childOf(where, it, file) }
                 Schema.arrayOf(child).copy(minItems = opts.minLength, maxItems = opts.maxLength)
             }
-            FieldKind.DICT -> Schema(types = listOf(JsonType.OBJECT), additional = call?.let { childOf(it, file) }?.let { com.routegenie.schema.model.Additional.OfSchema(it) })
-            FieldKind.FILE -> {
-                sawFile = true
-                return null
-            }
+            FieldKind.DICT -> Schema(types = listOf(JsonType.OBJECT), additional = call?.let { childOf(where, it, file) }?.let { com.routegenie.schema.model.Additional.OfSchema(it) })
+            FieldKind.FILE, FieldKind.IMAGE -> fileSchema(where, kind, fileCall, file)
             FieldKind.UNSUPPORTED -> return skip(where)
             else -> FieldSchemas.scalar(kind, opts) ?: return skip(where)
         }
@@ -335,15 +335,22 @@ internal class DrfSerializers(private val mapper: TypeMapper, private val partia
         return Prop(schema, required)
     }
 
+    /** One uploaded file; what the field's validators state about it is in the extension member. */
+    private fun fileSchema(where: String, kind: FieldKind, call: PyCallExpression?, file: PyFile): Schema {
+        sawFile = true
+        return files.spec(call, file, image = kind == FieldKind.IMAGE, where = where).toSchema()
+    }
+
     private fun skip(where: String, reason: Gap = Gap.UNSUPPORTED_FIELD): Prop? {
         session.skipped(where, reason)
         return null
     }
 
     /** `ListField(child=CharField())`: the schema of the child field call, when it is a plain field. */
-    private fun childOf(call: PyCallExpression, file: PyFile): Schema? {
+    private fun childOf(where: String, call: PyCallExpression, file: PyFile): Schema? {
         val child = PyLiterals.unparen(PyLiterals.keyword(call, DrfSchemaCatalog.CHILD) ?: PyLiterals.positional(call).firstOrNull()) as? PyCallExpression ?: return null
         val (kind, _) = classify(child, file) ?: return null
+        if (kind == FieldKind.FILE || kind == FieldKind.IMAGE) return fileSchema("$where[]", kind, child, file)
         if (kind == FieldKind.SERIALIZER || kind == FieldKind.LIST || kind == FieldKind.DICT || kind == FieldKind.PK_RELATED) return null
         return FieldSchemas.scalar(kind, options.fromCall(child, file))
     }

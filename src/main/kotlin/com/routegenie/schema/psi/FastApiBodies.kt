@@ -1,15 +1,14 @@
 package com.routegenie.schema.psi
 
-import com.intellij.psi.util.PsiTreeUtil
 import com.jetbrains.python.psi.PyCallExpression
 import com.jetbrains.python.psi.PyClass
 import com.jetbrains.python.psi.PyExpression
 import com.jetbrains.python.psi.PyFile
 import com.jetbrains.python.psi.PyFunction
 import com.jetbrains.python.psi.PyNamedParameter
-import com.jetbrains.python.psi.PyReferenceExpression
 import com.routegenie.Limits
 import com.routegenie.schema.model.BodyEncoding
+import com.routegenie.schema.model.FileSpec
 import com.routegenie.schema.model.JsonType
 import com.routegenie.schema.model.Schema
 import com.routegenie.schema.psi.PydanticCatalog.Keys
@@ -62,14 +61,25 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
 
     private val bodies = ArrayList<Param>()
     private val forms = ArrayList<Param>()
+
+    /** True when a file parameter was met: the form fields and the files then travel together as `multipart/form-data`. */
+    private var sawFile = false
+
+    /** Parameters declared as `Annotated[Model, Form()]`, and the other form or file parameters; FastAPI cannot mix the two kinds. */
+    private var formModels = 0
+    private var otherFormParameters = 0
     private var unsupported: BodyResult.Unsupported? = null
     private val visited = HashSet<PyFunction>()
 
     fun extract(handler: PyFunction): BodyResult {
         collect(handler, 0)
         unsupported?.let { return it }
+        if (formModels > 0 && (formModels > 1 || otherFormParameters > 0)) {
+            return BodyResult.Unsupported(Gap.AMBIGUOUS, "a form model together with other form or file parameters (FastAPI reads the model as the whole form)")
+        }
+        if (sawFile && bodies.isNotEmpty()) return BodyResult.Unsupported(Gap.AMBIGUOUS, "file uploads and a JSON body (FastAPI rejects the mix)")
         if (forms.isNotEmpty() && bodies.isNotEmpty()) return BodyResult.Unsupported(Gap.AMBIGUOUS, "form fields and a JSON body")
-        if (forms.isNotEmpty()) return BodyResult.Found(BodyEncoding.FORM_URLENCODED, objectOf(forms))
+        if (forms.isNotEmpty()) return BodyResult.Found(if (sawFile) BodyEncoding.MULTIPART else BodyEncoding.FORM_URLENCODED, objectOf(forms))
         if (bodies.isEmpty()) return BodyResult.NoBody
         val single = bodies.singleOrNull()
         val root = if (single != null && !single.embed) withoutNull(single.schema).copy(default = null) else objectOf(bodies)
@@ -100,7 +110,6 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
         val name = parameter.name ?: return
         val file = parameter.containingFile as? PyFile ?: return
         val annotation = parameter.annotation?.value
-        if (annotation != null && mentions(annotation, file, FastApiBodyCatalog.uploadFile)) return fail(Gap.NOT_REPRESENTABLE, "file upload in $name")
         if (annotation != null && isInjected(annotation, file)) return
 
         val diagnostics = session.diagnostics.size
@@ -111,7 +120,8 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
         val metaCalls = typed?.meta?.filterIsInstance<PyCallExpression>().orEmpty()
         fun kindOf(call: PyCallExpression?) = call?.let { FastApiBodyCatalog.kinds[symbols.libName(it.callee, file)] }
         val marker = if (kindOf(defaultCall) != null) defaultCall else metaCalls.lastOrNull { kindOf(it) != null }
-        val kind = kindOf(marker)
+        // A parameter typed `UploadFile` (or a list of them) is a file whether or not `File()` is written.
+        val kind = kindOf(marker) ?: if (typed != null && FileSpec.shape(typed.schema) != null) FastApiBodyCatalog.Kind.FILE else null
 
         // Whatever is learned about parameters that turn out not to be the body must not leave notes behind.
         fun irrelevant() {
@@ -125,7 +135,7 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
                 dependency(marker!!, annotation, file, depth)
             }
             FastApiBodyCatalog.Kind.QUERY, FastApiBodyCatalog.Kind.HEADER, FastApiBodyCatalog.Kind.COOKIE, FastApiBodyCatalog.Kind.PATH -> irrelevant()
-            FastApiBodyCatalog.Kind.FILE -> fail(Gap.NOT_REPRESENTABLE, "file upload in $name")
+            FastApiBodyCatalog.Kind.FILE -> fileParameter(name, typed, marker, defaultExpression, file)
             FastApiBodyCatalog.Kind.FORM -> form(name, typed, marker!!, defaultExpression, file)
             FastApiBodyCatalog.Kind.BODY -> body(name, typed, marker!!, defaultExpression, file)
             null -> {
@@ -177,6 +187,42 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
         return inMarker ?: plain
     }
 
+    /**
+     * `file: UploadFile`, `file: bytes = File()`, `files: list[UploadFile]`, `Optional[UploadFile]`: a part named after the
+     * parameter (or the alias). `bytes` only means a file under `File()`; as a query or `Form` value it is text.
+     */
+    private fun fileParameter(name: String, typed: Typed?, marker: PyCallExpression?, default: PyExpression?, file: PyFile) {
+        var schema = typed?.schema ?: return fail(Gap.UNRESOLVED_TYPE, "type of file parameter $name")
+        if (marker != null) schema = Constraints.applyCall(schema, marker, mapper.constants) ?: return fail(Gap.UNRESOLVED_TYPE, "constraints of file parameter $name")
+        schema = asFile(schema) ?: return fail(Gap.NOT_REPRESENTABLE, "File() of a type that is not bytes or UploadFile in $name")
+        if (FileSpec.shape(schema) == null) return fail(Gap.NOT_REPRESENTABLE, "file parameter $name is not a file or a list of files")
+        val value = declaredDefault(marker, default)
+        val required = value == null || PyLiterals.isEllipsis(value)
+        if (!required) {
+            (PyLiterals.json(value) ?: mapper.enumMemberValue(value, file))?.let { schema = schema.copy(default = it) }
+        }
+        val key = marker?.let { PyLiterals.string(PyLiterals.keyword(it, Keys.ALIAS)) } ?: name
+        sawFile = true
+        otherFormParameters++
+        forms += Param(key, schema, required, false)
+    }
+
+    /**
+     * The schema of a file parameter with `bytes` turned into a file: `UploadFile` already is one, and the length limit of
+     * `bytes` is a size limit. A list is converted item by item; an optional keeps its null branch. Null for any other type.
+     */
+    private fun asFile(schema: Schema): Schema? {
+        if (FileSpec.of(schema) != null) return schema.copy(minLength = null, maxLength = null, pattern = null)
+        if (schema.format == FileSpec.BINARY && JsonType.STRING in schema.types) {
+            return FileSpec(maxBytes = schema.maxLength?.toLong()).toSchema(schema.description).copy(deprecated = schema.deprecated)
+        }
+        if (schema.anyOf.isNotEmpty()) {
+            return schema.copy(anyOf = schema.anyOf.map { if (Constraints.isNull(it)) it else asFile(it) ?: return null })
+        }
+        if (schema.types == listOf(JsonType.ARRAY)) return schema.items?.let { asFile(it) }?.let { schema.copy(items = it, uniqueItems = schema.uniqueItems) }
+        return null
+    }
+
     private fun form(name: String, typed: Typed?, marker: PyCallExpression, default: PyExpression?, file: PyFile) {
         var schema = typed?.schema ?: return fail(Gap.UNRESOLVED_TYPE, "type of form parameter $name")
         schema = Constraints.applyCall(schema, marker, mapper.constants) ?: return fail(Gap.UNRESOLVED_TYPE, "constraints of form parameter $name")
@@ -184,6 +230,7 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
         if (ref != null) {
             // A model declared as `Annotated[Model, Form()]` contributes its fields.
             if (ref in mapper.typedDictDefs) return fail(Gap.NOT_REPRESENTABLE, "TypedDict form $name")
+            formModels++
             val model = mapper.defs[ref] ?: return fail(Gap.UNRESOLVED_TYPE, "form model $name")
             for ((key, property) in model.properties) {
                 if (!formRepresentable(property)) return fail(Gap.NOT_REPRESENTABLE, "form field $key")
@@ -192,6 +239,7 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
             return
         }
         if (!formRepresentable(schema)) return fail(Gap.NOT_REPRESENTABLE, "form field $name")
+        otherFormParameters++
         val value = declaredDefault(marker, default)
         val required = value == null || PyLiterals.isEllipsis(value)
         if (!required) {
@@ -242,11 +290,6 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
     private fun isInjected(annotation: PyExpression, file: PyFile): Boolean {
         val name = symbols.libName(PyLiterals.unionOperands(annotation).firstOrNull(), file) ?: return false
         return name in FastApiBodyCatalog.injected
-    }
-
-    private fun mentions(annotation: PyExpression, file: PyFile, names: Set<String>): Boolean {
-        val references = PsiTreeUtil.findChildrenOfType(annotation, PyReferenceExpression::class.java) + listOfNotNull(annotation as? PyReferenceExpression)
-        return references.any { symbols.libName(it, file) in names }
     }
 
     /** `Optional[Model]` and `Model | None` as just `Model`: the body of a request is never JSON null by itself. */

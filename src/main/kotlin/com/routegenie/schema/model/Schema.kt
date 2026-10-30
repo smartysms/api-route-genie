@@ -110,6 +110,9 @@ data class Schema(
 enum class BodyEncoding(val contentType: String) {
     JSON("application/json"),
     FORM_URLENCODED("application/x-www-form-urlencoded"),
+
+    /** Named parts of text and uploaded files. Such a body has no text template: see [BodyRenderer.renderMultipart]. */
+    MULTIPART("multipart/form-data"),
 }
 
 /** How sure the extraction is that the schema is what the server enforces; a gap or a custom validator lowers it. */

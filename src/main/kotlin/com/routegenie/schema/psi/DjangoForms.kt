@@ -8,6 +8,7 @@ import com.jetbrains.python.psi.PyFunction
 import com.jetbrains.python.psi.PyTargetExpression
 import com.routegenie.model.HttpMethod
 import com.routegenie.schema.model.BodyEncoding
+import com.routegenie.schema.model.FileSpec
 import com.routegenie.schema.model.Json
 import com.routegenie.schema.model.JsonType
 import com.routegenie.schema.model.Schema
@@ -17,7 +18,8 @@ private class FormField(val name: String, val call: PyCallExpression, val file: 
 /**
  * Django forms (`Form`, `ModelForm`) as the flat object a browser posts, and the views that are statically bound to one:
  * a class based view with `form_class` (or `model` + `fields` on a create / update view), or a view function that builds
- * exactly one form from `request.POST`. A form that reads files needs multipart and has no template.
+ * exactly one form from `request.POST`. A form with a file field is sent as multipart; a file field that takes several files
+ * (Django's `MultipleFileField` recipe: a widget with `allow_multiple_selected = True`) is a list of files.
  */
 internal class DjangoForms(private val mapper: TypeMapper) {
     private val session = mapper.session
@@ -25,6 +27,7 @@ internal class DjangoForms(private val mapper: TypeMapper) {
     private val options = OptionReader(mapper)
     private val models = DjangoModels(mapper, options)
     private val scan = ViewScan(mapper)
+    private val files = FileFields(mapper)
 
     fun extract(target: Target, verb: HttpMethod): BodyResult {
         if (verb != HttpMethod.POST && verb != HttpMethod.PUT && verb != HttpMethod.PATCH) return BodyResult.NoBody
@@ -161,7 +164,11 @@ internal class DjangoForms(private val mapper: TypeMapper) {
                 continue
             }
             var kind = models.fieldKind(modelField, choices = opts.choices != null)
-            if (kind == FieldKind.FILE) return BodyResult.Unsupported(Gap.NOT_REPRESENTABLE, "$where is a file")
+            if (kind == FieldKind.FILE || kind == FieldKind.IMAGE) {
+                properties[name] = files.spec(modelField.call, modelField.file, kind == FieldKind.IMAGE, where).toSchema().let { schema -> opts.description?.let { schema.copy(description = it) } ?: schema }
+                if (opts.required != false) required += name
+                continue
+            }
             val many = kind == FieldKind.MANY_PK_RELATED
             if (many) kind = FieldKind.PK_RELATED
             val pk = if (kind == FieldKind.PK_RELATED) models.relatedModel(modelField)?.let { models.primaryKeySchema(it, PyLiterals.string(modelField.keyword("to_field"))) } else null
@@ -178,7 +185,7 @@ internal class DjangoForms(private val mapper: TypeMapper) {
     }
 
     private fun formResult(properties: Map<String, Schema>, required: List<String>) =
-        BodyResult.Found(BodyEncoding.FORM_URLENCODED, Schema(types = listOf(JsonType.OBJECT), properties = properties, required = required))
+        BodyResult.Found(if (properties.values.any(FileSpec::containsFile)) BodyEncoding.MULTIPART else BodyEncoding.FORM_URLENCODED, Schema(types = listOf(JsonType.OBJECT), properties = properties, required = required))
 
     private fun recordValidators(cls: PyClass) {
         for (c in mapper.hierarchy.baseFirst(cls)) {
@@ -192,7 +199,12 @@ internal class DjangoForms(private val mapper: TypeMapper) {
     private fun fieldKind(call: PyCallExpression, file: PyFile): FieldKind? = when (val sym = symbols.resolve(call.callee, file)) {
         is Sym.Lib -> DjangoSchemaCatalog.formFields[sym.name]
         is Sym.Cls -> mapper.hierarchy.info(sym.cls).libraryBases.firstNotNullOfOrNull { DjangoSchemaCatalog.formFields[it] }
-            ?.let { if (listOf("to_python", "clean", "__init__").any { m -> sym.cls.findMethodByName(m, false, null) != null }) FieldKind.UNSUPPORTED else it }
+            ?.let { base ->
+                val overrides = listOf("to_python", "clean", "__init__").any { m -> sym.cls.findMethodByName(m, false, null) != null }
+                // The documented multiple-file recipe overrides `clean` to check each file; the base class still defines the files.
+                val severalFiles = (base == FieldKind.FILE || base == FieldKind.IMAGE) && files.acceptsSeveral(call, sym.cls)
+                if (overrides && !severalFiles) FieldKind.UNSUPPORTED else base
+            }
         else -> null
     }
 
@@ -201,7 +213,15 @@ internal class DjangoForms(private val mapper: TypeMapper) {
         val where = "${owner.name}.${field.name}"
         val opts = options.fromCall(field.call, field.file)
         if (opts.disabled || field.kind == FieldKind.EXCLUDED) return Unit
-        if (field.kind == FieldKind.FILE) return null
+        if (field.kind == FieldKind.FILE || field.kind == FieldKind.IMAGE) {
+            val cls = (symbols.resolve(field.call.callee, field.file) as? Sym.Cls)?.cls
+            val one = files.spec(field.call, field.file, field.kind == FieldKind.IMAGE, where).toSchema()
+            var schema = if (files.acceptsSeveral(field.call, cls)) Schema.arrayOf(one) else one
+            opts.description?.let { schema = schema.copy(description = it) }
+            properties[field.name] = schema
+            if (opts.required != false) required += field.name
+            return Unit
+        }
         if (opts.unresolved != null || field.kind == FieldKind.UNSUPPORTED) {
             session.skipped(where, Gap.UNSUPPORTED_FIELD)
             return Unit

@@ -18,6 +18,7 @@ import com.jetbrains.python.psi.PyTargetExpression
 import com.jetbrains.python.psi.PyTupleExpression
 import com.routegenie.Limits
 import com.routegenie.schema.model.Additional
+import com.routegenie.schema.model.FileSpec
 import com.routegenie.schema.model.Json
 import com.routegenie.schema.model.JsonType
 import com.routegenie.schema.model.Schema
@@ -88,6 +89,8 @@ internal class TypeMapper(val session: Session) {
     }
 
     private fun libType(name: String): Typed? {
+        // An uploaded file; only a multipart body reads it, other bodies never see this schema.
+        if (name in FastApiBodyCatalog.uploadFile) return Typed(FileSpec().toSchema())
         PydanticCatalog.scalar(name)?.let { return Typed(it) }
         return when (name) {
             in PydanticCatalog.lists, in PydanticCatalog.tuples -> Typed(Schema(types = listOf(JsonType.ARRAY)))

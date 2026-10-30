@@ -14,7 +14,7 @@ import java.util.IdentityHashMap
 internal enum class ModelKind {
     AUTO, INTEGER, POSITIVE_INTEGER, FLOAT, DECIMAL, BOOLEAN, NULL_BOOLEAN,
     CHAR, TEXT, EMAIL, URL, SLUG, UUID, IP, DATE, DATETIME, TIME, DURATION,
-    FILE, JSON, ARRAY, HSTORE, FOREIGN_KEY, MANY_TO_MANY, UNSUPPORTED,
+    FILE, IMAGE, JSON, ARRAY, HSTORE, FOREIGN_KEY, MANY_TO_MANY, UNSUPPORTED,
 }
 
 /** Every fact about Django models, forms and generic views that body extraction relies on. */
@@ -51,7 +51,8 @@ internal object DjangoSchemaCatalog {
         put(ModelKind.DATETIME, "DateTimeField")
         put(ModelKind.TIME, "TimeField")
         put(ModelKind.DURATION, "DurationField")
-        put(ModelKind.FILE, "FileField", "ImageField")
+        put(ModelKind.FILE, "FileField")
+        put(ModelKind.IMAGE, "ImageField")
         put(ModelKind.JSON, "JSONField")
         put(ModelKind.ARRAY, "ArrayField")
         put(ModelKind.HSTORE, "HStoreField")
@@ -95,11 +96,12 @@ internal object DjangoSchemaCatalog {
         put(FieldKind.CHOICE, "ChoiceField", "TypedChoiceField")
         put(FieldKind.MULTIPLE_CHOICE, "MultipleChoiceField", "TypedMultipleChoiceField")
         put(FieldKind.JSON, "JSONField")
-        put(FieldKind.FILE, "FileField", "ImageField", "FilePathField")
+        put(FieldKind.FILE, "FileField")
+        put(FieldKind.IMAGE, "ImageField")
         put(FieldKind.PK_RELATED, "ModelChoiceField")
         put(FieldKind.MANY_PK_RELATED, "ModelMultipleChoiceField")
         put(FieldKind.EXCLUDED, "HiddenInput")
-        put(FieldKind.UNSUPPORTED, "MultiValueField", "SplitDateTimeField", "ComboField", "InlineForeignKeyField")
+        put(FieldKind.UNSUPPORTED, "FilePathField", "MultiValueField", "SplitDateTimeField", "ComboField", "InlineForeignKeyField")
     }
 
     // --- Generic class based views ---------------------------------------------------------------------------------------
@@ -196,6 +198,7 @@ internal class DjangoModels(private val mapper: TypeMapper, private val options:
         ModelKind.TIME -> FieldKind.TIME
         ModelKind.DURATION -> FieldKind.DURATION
         ModelKind.FILE -> FieldKind.FILE
+        ModelKind.IMAGE -> FieldKind.IMAGE
         ModelKind.JSON -> FieldKind.JSON
         ModelKind.ARRAY -> FieldKind.LIST
         ModelKind.HSTORE -> FieldKind.DICT

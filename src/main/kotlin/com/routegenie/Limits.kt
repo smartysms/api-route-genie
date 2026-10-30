@@ -520,4 +520,13 @@ object Limits {
 
     /** Fixed local modification time written into generated zip entries so the same seed gives the same bytes anywhere. */
     const val FILE_ZIP_ENTRY_DATE = "2020-01-01T00:00:00"
+
+    /** Multipart template: most file parts one body may have (a file list with a huge `minItems` is cut, not expanded), and the extra files a random body may add beyond the minimum. */
+    const val MULTIPART_MAX_PARTS = 64
+    const val MULTIPART_RANDOM_EXTRA_FILES = 2
+
+    /** Multipart template for a schema of 500 fields (fixed and random), and extraction of a multipart endpoint, cold and warm. */
+    const val BUDGET_MULTIPART_RENDER_500_FIELDS_MS = 40L
+    const val BUDGET_MULTIPART_EXTRACT_COLD_MS = 200L
+    const val BUDGET_MULTIPART_EXTRACT_WARM_MS = 5L
 }

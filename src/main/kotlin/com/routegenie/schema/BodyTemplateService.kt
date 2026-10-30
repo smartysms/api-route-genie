@@ -13,6 +13,7 @@ import com.routegenie.client.BodyTemplate
 import com.routegenie.client.BodyTemplateSource
 import com.routegenie.model.Endpoint
 import com.routegenie.schema.model.BodyRenderer
+import com.routegenie.schema.model.MultipartTemplate
 import com.routegenie.schema.model.RequestBodySchema
 import com.routegenie.schema.psi.RequestSchemaExtractor
 import kotlinx.coroutines.CancellationException
@@ -37,6 +38,9 @@ class BodyTemplateService(private val project: Project) : BodyTemplateSource {
     override suspend fun randomTemplateFor(endpoint: Endpoint): BodyTemplate? =
         entryOrNull(endpoint)?.body?.let { BodyRenderer.renderRandom(it) }
 
+    override suspend fun multipartTemplateFor(endpoint: Endpoint, random: Boolean): MultipartTemplate? =
+        entryOrNull(endpoint)?.body?.let { multipart(it, random) }
+
     /** The declared request body of [endpoint], kept for the validation phase; null when the code declares none. */
     suspend fun schemaFor(endpoint: Endpoint): RequestBodySchema? = entryOrNull(endpoint)?.body
 
@@ -47,6 +51,13 @@ class BodyTemplateService(private val project: Project) : BodyTemplateSource {
 
     fun randomTemplateNow(endpoint: Endpoint, random: kotlin.random.Random = kotlin.random.Random.Default): BodyTemplate? =
         entryNowOrNull(endpoint)?.body?.let { BodyRenderer.renderRandom(it, random) }
+
+    /** Same as [multipartTemplateFor] for a caller that already holds a read action in smart mode (tests). */
+    fun multipartTemplateNow(endpoint: Endpoint, random: Boolean, seed: kotlin.random.Random = kotlin.random.Random.Default): MultipartTemplate? =
+        entryNowOrNull(endpoint)?.body?.let { multipart(it, random, seed) }
+
+    private fun multipart(body: RequestBodySchema, random: Boolean, source: kotlin.random.Random = kotlin.random.Random.Default): MultipartTemplate? =
+        BodyRenderer.renderMultipart(body, if (random) source else null)
 
     /** Number of cached answers; for tests that check the bound. */
     internal fun cacheSize(): Int = synchronized(cache) { cache.size }

@@ -20,7 +20,7 @@ internal enum class FieldKind {
     DATETIME, DATE, TIME, DURATION,
     CHOICE, MULTIPLE_CHOICE,
     LIST, DICT, JSON,
-    FILE,
+    FILE, IMAGE,
 
     /** Read-only or hidden: never part of a request. */
     EXCLUDED,
