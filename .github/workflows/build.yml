@@ -52,7 +52,7 @@ jobs:
           } > failure.md
           head -c 60000 failure.md > failure-short.md
           gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@failure-short.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: plugin-zip
           path: build/distributions/*.zip
