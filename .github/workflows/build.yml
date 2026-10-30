@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,7 +19,39 @@ jobs:
           java-version: 25
       - uses: gradle/actions/setup-gradle@v4
       - name: Build, test and package
-        run: ./gradlew build --console=plain
+        shell: bash
+        run: ./gradlew build --console=plain 2>&1 | tee gradle.log; test "${PIPESTATUS[0]}" -eq 0
+      - name: Say what failed
+        # The run log needs a sign-in to read; a commit comment is readable by anyone who can see the commit.
+        if: failure() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "Build failed. Failing tests:"
+            echo '```'
+            python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          n = 0
+          for f in sorted(glob.glob("build/test-results/test/*.xml")):
+              for case in ET.parse(f).getroot().iter("testcase"):
+                  bad = case.find("failure")
+                  if bad is None:
+                      bad = case.find("error")
+                  if bad is not None and n < 40:
+                      n += 1
+                      print(case.get("classname") + "." + case.get("name"))
+                      print("    " + (bad.get("message") or "")[:300].replace("\n", " "))
+          print("failing tests listed:", n)
+          PY
+            echo '```'
+            echo "Last lines of the Gradle log:"
+            echo '```'
+            tail -n 60 gradle.log
+            echo '```'
+          } > failure.md
+          head -c 60000 failure.md > failure-short.md
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@failure-short.md
       - uses: actions/upload-artifact@v4
         with:
           name: plugin-zip
