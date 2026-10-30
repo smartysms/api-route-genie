@@ -1,6 +1,7 @@
 package com.routegenie.schema.model
 
 import com.routegenie.Limits
+import kotlin.random.Random
 
 /**
  * Builds one string that matches a regular expression, for a simple subset: literals, escapes (`\d \w \s ...`), classes,
@@ -28,9 +29,27 @@ object PatternSampler {
         return null
     }
 
+    /**
+     * Like [sample], but every free choice (alternative, repeat count, member of a class) is drawn from [random], so repeated
+     * calls give different strings. A draw that breaks the length limits or does not match is dropped; after
+     * [Limits.RANDOM_PATTERN_ATTEMPTS] misses the plain [sample] answers, so the result is as provable as before.
+     */
+    fun sampleRandom(pattern: String, random: Random, minLength: Int? = null, maxLength: Int? = null): String? {
+        if (pattern.length > Limits.SAMPLE_PATTERN_MAX_CHARS) return null
+        val regex = runCatching { Regex(pattern.replace("(?P<", "(?<")) }.getOrNull() ?: return null
+        repeat(Limits.RANDOM_PATTERN_ATTEMPTS) {
+            val text = runCatching { Parser(pattern, 0, random).parse() }.getOrNull() ?: return@repeat
+            if (text.length > Limits.SAMPLE_PATTERN_MAX_OUTPUT_CHARS) return@repeat
+            val length = text.codePointCount(0, text.length)
+            if (maxLength != null && length > maxLength) return@repeat
+            if (length >= (minLength ?: 0) && regex.containsMatchIn(text)) return text
+        }
+        return sample(pattern, minLength, maxLength)
+    }
+
     private class Unsupported : RuntimeException(null, null, false, false)
 
-    private class Parser(private val src: String, private val extra: Int) {
+    private class Parser(private val src: String, private val extra: Int, private val random: Random? = null) {
         private var pos = 0
         private var budget = Limits.SAMPLE_PATTERN_MAX_OUTPUT_CHARS
 
@@ -41,23 +60,42 @@ object PatternSampler {
         }
 
         private fun alternation(): String {
-            var first: String? = null
+            val branches = ArrayList<String>()
             do {
-                val branch = sequence()
-                if (first == null) first = branch
+                branches += sequence()
                 val more = pos < src.length && src[pos] == '|'
                 if (more) pos++
             } while (more)
-            return first.orEmpty()
+            // Every branch is parsed so the position ends after the last one; only one of them is used.
+            return (if (random != null) branches[random.nextInt(branches.size)] else branches.first())
         }
 
         private fun sequence(): String {
             val out = StringBuilder()
             while (pos < src.length && src[pos] != '|' && src[pos] != ')') {
+                val start = pos
                 val atom = atom()
+                val afterAtom = pos
                 val (min, max) = quantifier()
-                repeat(minOf(max.toLong(), min.toLong() + extra).toInt()) { out.append(atom) }
-                if (out.length > budget) throw Unsupported()
+                if (random == null) {
+                    repeat(minOf(max.toLong(), min.toLong() + extra).toInt()) { out.append(atom) }
+                } else {
+                    val upper = minOf(max.toLong(), min.toLong() + Limits.RANDOM_PATTERN_EXTRA_REPEAT).toInt()
+                    val count = if (upper > min) random.nextInt(min, upper + 1) else min
+                    val afterQuantifier = pos
+                    for (i in 0 until count) {
+                        if (i == 0) {
+                            out.append(atom)
+                        } else {
+                            // Each repeat is drawn again, so "[a-z]{3}" gives three different letters.
+                            pos = start
+                            out.append(atom())
+                        }
+                        if (out.length > budget) throw Unsupported()
+                    }
+                    pos = afterQuantifier
+                }
+                if (afterAtom > src.length || out.length > budget) throw Unsupported()
             }
             return out.toString()
         }
@@ -66,7 +104,7 @@ object PatternSampler {
             val c = src[pos++]
             return when (c) {
                 '^', '$' -> ""
-                '.' -> "a"
+                '.' -> letter()
                 '(' -> group()
                 '[' -> charClass()
                 '\\' -> escape(inClass = false)
@@ -121,9 +159,26 @@ object PatternSampler {
             if (pos >= src.length || members.isEmpty()) throw Unsupported()
             pos++
             // A letter or digit reads better than the first member of a class such as [-a-z]; any member satisfies the class.
+            if (random != null) return randomMember(members, negated)
             if (!negated) return (members.firstOrNull { it.first.isLetterOrDigit() } ?: members.first()).first.toString()
             return NEGATED_CANDIDATES.firstOrNull { cand -> members.none { cand in it } }?.toString() ?: throw Unsupported()
         }
+
+        /** A random character of the class (or, for a negated class, of the printable ASCII characters outside it). */
+        private fun randomMember(members: List<CharRange>, negated: Boolean): String {
+            val rnd = random!!
+            if (negated) {
+                val allowed = PRINTABLE.filter { c -> members.none { c in it } }
+                if (allowed.isEmpty()) throw Unsupported()
+                return allowed[rnd.nextInt(allowed.size)].toString()
+            }
+            // Printable characters of the class read better and are always valid; a class without any (control characters only) keeps its first.
+            val printable = members.flatMap { range -> range.filter { it in PRINTABLE_RANGE } }
+            if (printable.isEmpty()) return members.first().first.toString()
+            return printable[rnd.nextInt(printable.size)].toString()
+        }
+
+        private fun letter(): String = if (random != null) LETTERS[random.nextInt(LETTERS.length)].toString() else "a"
 
         /** One member of a class; a shorthand such as `\d` stands for its representative character. */
         private fun classChar(): Char {
@@ -135,8 +190,8 @@ object PatternSampler {
             if (pos >= src.length) throw Unsupported()
             val c = src[pos++]
             return when (c) {
-                'd' -> "0"
-                'w' -> "a"
+                'd' -> if (random != null) random.nextInt(10).toString() else "0"
+                'w' -> letter()
                 's' -> " "
                 'D', 'S' -> "a"
                 'W' -> "-"
@@ -183,4 +238,7 @@ object PatternSampler {
     }
 
     private val NEGATED_CANDIDATES = listOf('a', 'A', '0', 'x', '_', '-')
+    private const val LETTERS = "abcdefghijklmnopqrstuvwxyz"
+    private val PRINTABLE_RANGE = ' '..'~'
+    private val PRINTABLE: List<Char> = PRINTABLE_RANGE.toList()
 }

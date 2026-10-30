@@ -17,8 +17,8 @@ sealed interface BodyGeneration {
 
 /** The "Generate body" decision, free of Swing: asks the source (off the UI thread, it is `suspend`) and never invents a body. */
 object BodyGenerator {
-    suspend fun generate(source: BodyTemplateSource, endpoint: Endpoint, currentText: String): BodyGeneration {
-        val template = source.templateFor(endpoint) ?: return BodyGeneration.Unavailable
+    suspend fun generate(source: BodyTemplateSource, endpoint: Endpoint, currentText: String, random: Boolean = false): BodyGeneration {
+        val template = (if (random) source.randomTemplateFor(endpoint) else source.templateFor(endpoint)) ?: return BodyGeneration.Unavailable
         return if (currentText.isBlank()) BodyGeneration.Ready(template) else BodyGeneration.NeedsConfirmation(template)
     }
 

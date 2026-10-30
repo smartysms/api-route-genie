@@ -96,18 +96,6 @@ object SampleGenerator {
 
         private fun isNullOnly(s: Schema) = s.types == listOf(JsonType.NULL) && s.enumValues == null
 
-        private fun typeOf(s: Schema): JsonType? {
-            s.types.firstOrNull { it != JsonType.NULL }?.let { return it }
-            if (s.types.isNotEmpty()) return JsonType.NULL
-            return when {
-                s.properties.isNotEmpty() || s.additional is Additional.OfSchema || s.minProperties != null -> JsonType.OBJECT
-                s.items != null || s.prefixItems.isNotEmpty() || s.minItems != null || s.uniqueItems -> JsonType.ARRAY
-                s.minimum != null || s.maximum != null || s.exclusiveMinimum != null || s.exclusiveMaximum != null || s.multipleOf != null -> JsonType.NUMBER
-                s.minLength != null || s.maxLength != null || s.pattern != null || s.format != null -> JsonType.STRING
-                else -> null
-            }
-        }
-
         // --- Objects and arrays ------------------------------------------------------------------------------------------
 
         private fun obj(s: Schema, depth: Int, path: String): Json? {
@@ -236,6 +224,19 @@ object SampleGenerator {
                 (s.exclusiveMinimum == null || v > s.exclusiveMinimum) &&
                 (s.exclusiveMaximum == null || v < s.exclusiveMaximum) &&
                 (multiple == null || v.remainder(multiple).signum() == 0)
+    }
+
+    /** The JSON type a schema is about: its first non-null declared type, or the one its keywords imply. Null when it says nothing. */
+    internal fun typeOf(s: Schema): JsonType? {
+        s.types.firstOrNull { it != JsonType.NULL }?.let { return it }
+        if (s.types.isNotEmpty()) return JsonType.NULL
+        return when {
+            s.properties.isNotEmpty() || s.additional is Additional.OfSchema || s.minProperties != null -> JsonType.OBJECT
+            s.items != null || s.prefixItems.isNotEmpty() || s.minItems != null || s.uniqueItems -> JsonType.ARRAY
+            s.minimum != null || s.maximum != null || s.exclusiveMinimum != null || s.exclusiveMaximum != null || s.multipleOf != null -> JsonType.NUMBER
+            s.minLength != null || s.maxLength != null || s.pattern != null || s.format != null -> JsonType.STRING
+            else -> null
+        }
     }
 
     private val TWO = BigDecimal(2)

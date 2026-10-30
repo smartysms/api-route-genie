@@ -9,8 +9,14 @@ object BodyRenderer {
      * The template for [body], or null when the schema determines no sample at all. A model whose members all failed to
      * produce a value is reported as null rather than as an empty object, because `{}` would claim an empty body.
      */
-    fun render(body: RequestBodySchema, includeOptional: Boolean = true): BodyTemplate? {
-        val sample = SampleGenerator.generate(body.schema, SampleOptions(includeOptional))
+    fun render(body: RequestBodySchema, includeOptional: Boolean = true): BodyTemplate? =
+        finish(body, SampleGenerator.generate(body.schema, SampleOptions(includeOptional)))
+
+    /** Like [render], but with random values that fit the declared types and limits; a different document on every call. */
+    fun renderRandom(body: RequestBodySchema, random: kotlin.random.Random = kotlin.random.Random.Default, options: RandomOptions = RandomOptions()): BodyTemplate? =
+        finish(body, RandomSampleGenerator.generate(body.schema, random, options))
+
+    private fun finish(body: RequestBodySchema, sample: SampleResult): BodyTemplate? {
         val value = sample.value ?: return null
         if (value is Json.Obj && value.fields.isEmpty() && sample.gaps.isNotEmpty()) return null
         val text = when (body.encoding) {

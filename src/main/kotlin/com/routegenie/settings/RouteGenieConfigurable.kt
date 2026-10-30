@@ -3,6 +3,8 @@ package com.routegenie.settings
 import com.intellij.openapi.options.BoundSearchableConfigurable
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.ui.DialogPanel
+import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.panel
 import com.routegenie.Branding
@@ -18,6 +20,11 @@ class RouteGenieConfigurable : BoundSearchableConfigurable(Branding.NAME, "", Id
             row {
                 checkBox(RouteGenieBundle.message("settings.gutter.show"))
                     .bindSelected({ settings.showGutterIcons }, { settings.showGutterIcons = it })
+            }
+            row(RouteGenieBundle.message("settings.fill.label")) {
+                comboBox(BodyFillMode.entries, SimpleListCellRenderer.create("") { RouteGenieBundle.message(it.bundleKey) })
+                    .bindItem({ settings.bodyFillMode }, { settings.bodyFillMode = it ?: BodyFillMode.SAMPLE })
+                    .comment(RouteGenieBundle.message("settings.fill.comment"))
             }
             if (RouteGenieSettings.isPaidPythonActive()) {
                 row { comment(RouteGenieBundle.message("settings.gutter.proNote")) }

@@ -34,6 +34,9 @@ class BodyTemplateService(private val project: Project) : BodyTemplateSource {
 
     override suspend fun templateFor(endpoint: Endpoint): BodyTemplate? = entryOrNull(endpoint)?.template
 
+    override suspend fun randomTemplateFor(endpoint: Endpoint): BodyTemplate? =
+        entryOrNull(endpoint)?.body?.let { BodyRenderer.renderRandom(it) }
+
     /** The declared request body of [endpoint], kept for the validation phase; null when the code declares none. */
     suspend fun schemaFor(endpoint: Endpoint): RequestBodySchema? = entryOrNull(endpoint)?.body
 
@@ -41,6 +44,9 @@ class BodyTemplateService(private val project: Project) : BodyTemplateSource {
     fun templateNow(endpoint: Endpoint): BodyTemplate? = entryNowOrNull(endpoint)?.template
 
     fun schemaNow(endpoint: Endpoint): RequestBodySchema? = entryNowOrNull(endpoint)?.body
+
+    fun randomTemplateNow(endpoint: Endpoint, random: kotlin.random.Random = kotlin.random.Random.Default): BodyTemplate? =
+        entryNowOrNull(endpoint)?.body?.let { BodyRenderer.renderRandom(it, random) }
 
     /** Number of cached answers; for tests that check the bound. */
     internal fun cacheSize(): Int = synchronized(cache) { cache.size }

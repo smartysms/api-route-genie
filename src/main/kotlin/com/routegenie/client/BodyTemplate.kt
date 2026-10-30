@@ -12,4 +12,10 @@ data class BodyTemplate(val contentType: String, val text: String)
  */
 fun interface BodyTemplateSource {
     suspend fun templateFor(endpoint: Endpoint): BodyTemplate?
+
+    /**
+     * Like [templateFor], but with random values that fit the declared types and limits; another document on every call.
+     * A source that cannot do that answers null, as for a body that is not declared.
+     */
+    suspend fun randomTemplateFor(endpoint: Endpoint): BodyTemplate? = null
 }

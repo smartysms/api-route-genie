@@ -25,6 +25,10 @@ class RouteGenieSettings : PersistentStateComponent<RouteGenieSettings.State> {
     class State {
         @JvmField
         var showGutterIcons: Boolean? = null
+
+        /** Name of a [BodyFillMode]; null until the user chooses. */
+        @JvmField
+        var bodyFillMode: String? = null
     }
 
     private var state = State()
@@ -39,6 +43,13 @@ class RouteGenieSettings : PersistentStateComponent<RouteGenieSettings.State> {
         get() = SettingsPolicy.showGutterIcons(state.showGutterIcons, isPaidPythonActive())
         set(value) {
             state.showGutterIcons = value
+        }
+
+    /** What the request body is filled with, on its own, when an endpoint is opened for the first time. */
+    var bodyFillMode: BodyFillMode
+        get() = BodyFillMode.parse(state.bodyFillMode)
+        set(value) {
+            state.bodyFillMode = value.name
         }
 
     companion object {

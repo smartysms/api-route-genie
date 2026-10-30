@@ -30,6 +30,8 @@ import com.routegenie.client.FieldLocation
 import com.routegenie.client.SecretKeys
 import com.routegenie.model.Endpoint
 import com.routegenie.model.HttpMethod
+import com.routegenie.settings.BodyFillMode
+import com.routegenie.settings.RouteGenieSettings
 import com.routegenie.ui.design.BadgeState
 import com.routegenie.ui.design.DesignTokens
 import com.routegenie.ui.design.MethodBadge
@@ -122,6 +124,8 @@ class RequestFormPanel(
     private val secrets: LayeredSecrets,
     private val onEdited: () -> Unit,
     private val onBaseUrl: (String) -> Unit,
+    /** What the body is filled with on opening an endpoint; read when an endpoint opens, so a changed setting applies at once. */
+    private val fillMode: () -> BodyFillMode = { RouteGenieSettings.getInstance().bodyFillMode },
 ) : JBPanel<RequestFormPanel>(BorderLayout()), Disposable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var form: RequestForm? = null
@@ -152,9 +156,13 @@ class RequestFormPanel(
     }
     private val bodyCards = JPanel(CardLayout())
     private val generate = JButton(msg("req.body.generate")).apply { toolTipText = msg("req.body.generate.tooltip") }
+    private val randomBody = JButton(msg("req.body.random")).apply { toolTipText = msg("req.body.random.tooltip") }
     private val generateNote = JBLabel().apply { foreground = Palette.textSecondary; isVisible = false }
     private val replaceBar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(DesignTokens.Space.S), 0)).apply { isVisible = false; isOpaque = false }
     private var pendingTemplate: com.routegenie.client.BodyTemplate? = null
+
+    /** The text the generate buttons put into the editor last; text equal to it was not written by the user. */
+    private var lastGenerated: String? = null
 
     /** Endpoints whose body was already offered automatically in this session; used on the UI thread only. */
     private val autoFilled = LinkedHashSet<String>()
@@ -205,6 +213,7 @@ class RequestFormPanel(
             showBodyCard(bodyCombo.selectedItem as BodyType); onEdited()
         }
         generate.addActionListener { generateBody() }
+        randomBody.addActionListener { generateBody(random = true) }
     }
 
     private fun simpleListener(f: () -> Unit) = object : SwingDocumentListener {
@@ -260,6 +269,7 @@ class RequestFormPanel(
                 add(JBLabel(msg("req.body.type")).apply { foreground = Palette.textSecondary })
                 add(bodyCombo)
                 add(generate)
+                add(randomBody)
                 add(generateNote)
             }, BorderLayout.NORTH)
             add(bodyCards, BorderLayout.CENTER)
@@ -335,6 +345,7 @@ class RequestFormPanel(
     private fun showBodyCard(kind: BodyType) {
         // The button fills a JSON/text body, so it is offered for those and for None (where it is the way in), not for form types.
         generate.isVisible = kind == BodyType.NONE || kind == BodyType.JSON || kind == BodyType.TEXT
+        randomBody.isVisible = generate.isVisible
         if (kind == BodyType.JSON || kind == BodyType.TEXT) setBodyText(kind, form?.bodyText ?: bodyDocument.text)
         (bodyCards.layout as CardLayout).show(bodyCards, if (kind == BodyType.JSON || kind == BodyType.TEXT) CARD_EDITOR else kind.name)
     }
@@ -389,14 +400,22 @@ class RequestFormPanel(
 
     // ---- body generation ----------------------------------------------------------------------------------------
 
-    fun generateBody() {
+    /**
+     * Fills the body from the code: with the fixed sample, or with [random] values (another set on every press). Text the user
+     * wrote is never replaced without asking, but text this button put there itself is, so pressing Random body again just
+     * gives the next set.
+     */
+    fun generateBody(random: Boolean = false) {
         val f = form ?: return
         generate.isEnabled = false
+        randomBody.isEnabled = false
         generateNote.isVisible = false
+        val current = if (f.bodyText == lastGenerated) "" else f.bodyText
         scope.launch {
-            val result = BodyGenerator.generate(bodyTemplates(), f.endpoint, f.bodyText)
+            val result = BodyGenerator.generate(bodyTemplates(), f.endpoint, current, random)
             withContext(Dispatchers.EDT) {
                 generate.isEnabled = true
+                randomBody.isEnabled = true
                 if (form !== f) return@withContext
                 when (result) {
                     is BodyGeneration.Ready -> applyTemplate(f, result.template)
@@ -414,10 +433,11 @@ class RequestFormPanel(
      */
     fun autoFillBody() {
         val f = form ?: return
-        if (f.endpoint.method !in AUTOFILL_METHODS || !untouched(f) || f.endpoint.key in autoFilled) return
+        val mode = fillMode()
+        if (mode == BodyFillMode.OFF || f.endpoint.method !in AUTOFILL_METHODS || !untouched(f) || f.endpoint.key in autoFilled) return
         scope.launch {
             val template = try {
-                (BodyGenerator.generate(bodyTemplates(), f.endpoint, "") as? BodyGeneration.Ready)?.template
+                (BodyGenerator.generate(bodyTemplates(), f.endpoint, "", random = mode == BodyFillMode.RANDOM) as? BodyGeneration.Ready)?.template
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -444,6 +464,7 @@ class RequestFormPanel(
 
     private fun applyTemplate(f: RequestForm, template: com.routegenie.client.BodyTemplate) {
         BodyGenerator.apply(f, template)
+        lastGenerated = template.text
         replaceBar.isVisible = false
         pendingTemplate = null
         val keep = baseUrl.text
@@ -466,6 +487,7 @@ class RequestFormPanel(
     internal fun confirmReplaceForTest() { pendingTemplate?.let { t -> form?.let { applyTemplate(it, t) } } }
     internal fun bodyTextForTest(): String = bodyDocument.text
     internal fun generateButtonForTest(): JButton = generate
+    internal fun randomButtonForTest(): JButton = randomBody
     internal fun methodComboVisible(): Boolean = methodCombo.isVisible
     internal fun baseUrlTextForTest(): String = baseUrl.text
     internal fun bodyEditorIsOnScreen(): Boolean = generalizedVisible(bodyEditor)

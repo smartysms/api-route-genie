@@ -435,4 +435,35 @@ object Limits {
     /** Error report: the stack trace is cut to this many characters at most, and never below the floor when shrinking to fit. */
     const val REPORT_MAX_TRACE_CHARS = 4_000
     const val REPORT_MIN_TRACE_CHARS = 400
+
+    /** Random body: chance that an optional property is written, and chance that a nullable value is null. */
+    const val RANDOM_OPTIONAL_CHANCE = 0.8
+    const val RANDOM_NULL_CHANCE = 0.1
+
+    /** Random body: length of a free string (characters) when the schema sets no bounds. */
+    const val RANDOM_STRING_MIN_CHARS = 3
+    const val RANDOM_STRING_MAX_CHARS = 12
+
+    /** Random body: a number with no upper or lower bound is drawn within this distance of zero or of the one bound it has. */
+    const val RANDOM_NUMBER_SPAN = 1_000L
+
+    /** Random body: widest range a bounded number is drawn from; a wider range is cut to this width above its lower bound. */
+    const val RANDOM_NUMBER_MAX_WIDTH = 1_000_000L
+
+    /** Random body: items beyond the minimum an array may get, and the most entries of a map with unnamed keys. */
+    const val RANDOM_ARRAY_EXTRA_ITEMS = 2
+    const val RANDOM_MAP_MAX_ENTRIES = 3
+
+    /** Random body: decimals tried, in turn, for a fractional number without `multipleOf`; and tries to draw a string that fits a pattern. */
+    const val RANDOM_MAX_DECIMALS = 6
+    const val RANDOM_PATTERN_ATTEMPTS = 24
+
+    /** Random body: draws tried to find an item that is not in a `uniqueItems` array yet (a small enum needs many). */
+    const val RANDOM_UNIQUE_ATTEMPTS = 64
+
+    /** Random body: extra repeats an open-ended pattern quantifier (`*`, `+`, `{n,}`) may get. */
+    const val RANDOM_PATTERN_EXTRA_REPEAT = 6
+
+    /** The random generator on a schema of 500 fields. */
+    const val BUDGET_RANDOM_SAMPLE_500_FIELDS_MS = 40L
 }
