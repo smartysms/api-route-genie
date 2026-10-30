@@ -22,6 +22,7 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
+import com.routegenie.Limits
 import com.routegenie.RouteGenieBundle
 import com.routegenie.client.BodyTemplateSource
 import com.routegenie.client.FieldError
@@ -34,6 +35,7 @@ import com.routegenie.ui.design.DesignTokens
 import com.routegenie.ui.design.MethodBadge
 import com.routegenie.ui.design.Palette
 import com.routegenie.ui.design.SectionHeader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -153,6 +155,9 @@ class RequestFormPanel(
     private val generateNote = JBLabel().apply { foreground = Palette.textSecondary; isVisible = false }
     private val replaceBar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(DesignTokens.Space.S), 0)).apply { isVisible = false; isOpaque = false }
     private var pendingTemplate: com.routegenie.client.BodyTemplate? = null
+
+    /** Endpoints whose body was already offered automatically in this session; used on the UI thread only. */
+    private val autoFilled = LinkedHashSet<String>()
 
     /** The slot where Phase 4 shows the result of schema validation of the body; empty and hidden until then. */
     internal val bodyValidationSlot = JBLabel().apply { isVisible = false; foreground = Palette.textSecondary }
@@ -402,6 +407,41 @@ class RequestFormPanel(
         }
     }
 
+    /**
+     * Fills the body of an endpoint that was just opened, once per endpoint and session, when the code declares a body. It only
+     * touches a form that is still untouched (type None, no text), so the user's own input, or a deliberate "None", is never
+     * overwritten; an endpoint whose code declares no body stays as it is without a word. Nothing is sent by this.
+     */
+    fun autoFillBody() {
+        val f = form ?: return
+        if (f.endpoint.method !in AUTOFILL_METHODS || !untouched(f) || f.endpoint.key in autoFilled) return
+        scope.launch {
+            val template = try {
+                (BodyGenerator.generate(bodyTemplates(), f.endpoint, "") as? BodyGeneration.Ready)?.template
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LOG.warn("Automatic body for ${f.endpoint.key} failed", e)
+                null
+            }
+            withContext(Dispatchers.EDT) {
+                if (form !== f || !untouched(f)) return@withContext
+                rememberAutoFilled(f.endpoint.key)
+                if (template == null) return@withContext
+                applyTemplate(f, template)
+                generateNote.text = msg("req.body.autofilled")
+                generateNote.isVisible = true
+            }
+        }
+    }
+
+    private fun untouched(f: RequestForm) = f.bodyKind == BodyType.NONE && f.bodyText.isBlank()
+
+    private fun rememberAutoFilled(key: String) {
+        autoFilled.add(key)
+        if (autoFilled.size > Limits.LAST_INPUT_MAX_ENDPOINTS) autoFilled.remove(autoFilled.first())
+    }
+
     private fun applyTemplate(f: RequestForm, template: com.routegenie.client.BodyTemplate) {
         BodyGenerator.apply(f, template)
         replaceBar.isVisible = false
@@ -451,6 +491,8 @@ class RequestFormPanel(
 
     private companion object {
         const val PATH_LABEL_WIDTH = 110
+        val AUTOFILL_METHODS = setOf(HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH)
+        val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(RequestFormPanel::class.java)
         /** JSON and text share one editor card; a card name maps to exactly one component. */
         const val CARD_EDITOR = "editor"
     }

@@ -256,6 +256,7 @@ class RequestSection(
         }
         current = form
         formPanel.bind(form, env.current().baseUrl)
+        formPanel.autoFillBody()
         (cards.layout as CardLayout).show(cards, CARD_FORM)
         response.refreshCurl()
         updateButtons()

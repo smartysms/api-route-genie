@@ -170,6 +170,64 @@ class RequestSectionTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(owner) }
     }
 
+    fun testAFreshPostFillsItsBodyFromTheCodeAndSendsNothing() {
+        val owner = owner()
+        try {
+            template = BodyTemplate("application/json", "{\"name\": \"string\"}")
+            val s = section(owner)
+            s.show(endpoint(HttpMethod.POST, "/items", emptyList()))
+            val form = s.formForTest()
+            waitFor { form.bodyTextForTest().isNotEmpty() }
+            assertEquals("{\"name\": \"string\"}", form.bodyTextForTest())
+            assertEquals(BodyType.JSON, s.currentForm()!!.bodyKind)
+            assertNotNull("the user is told where the text came from", form.generateNoteText())
+            assertEquals("nothing is sent by filling the body", 0, engine.streams)
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testOnlyPostPutAndPatchAreFilledAndOnlyWhenTheCodeDeclaresABody() {
+        val owner = owner()
+        try {
+            template = BodyTemplate("application/json", "{\"a\": 1}")
+            val s = section(owner)
+            for (method in listOf(HttpMethod.GET, HttpMethod.DELETE, HttpMethod.ANY)) {
+                s.show(endpoint(method, "/x-$method", emptyList()))
+                Thread.sleep(150)
+                PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                assertEquals("$method is not filled", "", s.formForTest().bodyTextForTest())
+            }
+            template = null
+            s.show(endpoint(HttpMethod.PATCH, "/none", emptyList()))
+            Thread.sleep(150)
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            assertEquals("no declared body: nothing is invented", "", s.formForTest().bodyTextForTest())
+            assertNull(s.formForTest().generateNoteText())
+        } finally { Disposer.dispose(owner) }
+    }
+
+    fun testTheUsersOwnBodyIsNeverOverwrittenAndANoneChoiceIsKeptForTheSession() {
+        val owner = owner()
+        try {
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            template = BodyTemplate("application/json", "{\"generated\": true}")
+            val slow = BodyTemplateSource { gate.await(); template }
+            val s = RequestSection(
+                project, owner, engine = { engine }, bodyTemplates = { slow }, ui = ui,
+                state = state, secretStore = store, secretExecutor = directExecutor, responses = com.routegenie.client.ResponseSlot(),
+            )
+            s.show(endpoint(HttpMethod.PUT, "/items", emptyList()))
+            // The user starts typing before the answer arrives.
+            s.currentForm()!!.bodyKind = BodyType.TEXT
+            s.currentForm()!!.bodyText = "mine"
+            s.formForTest().refresh(null)
+            gate.complete(Unit)
+            Thread.sleep(200)
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            assertEquals("mine", s.formForTest().bodyTextForTest())
+            assertEquals(BodyType.TEXT, s.currentForm()!!.bodyKind)
+        } finally { Disposer.dispose(owner) }
+    }
+
     fun testFocusOnResponseHidesTheFormAndTheListAndRestoresThemAsTheyWere() {
         val owner = owner()
         try {
