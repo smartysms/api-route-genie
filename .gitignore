@@ -7,3 +7,6 @@ out/
 *.iml
 BUILD_READY
 .gradle-lock/
+
+# Temporary worktrees of helper agents
+.claude/
