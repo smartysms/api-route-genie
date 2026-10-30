@@ -139,3 +139,65 @@ confirmation is a **pin**.
 ## Leak tests
 
 Weak-reference tests must not keep the object in a local variable of the test method: the interpreter keeps the locals of a running frame alive as GC roots, so the object looks leaked although nothing in the plugin holds it. Build the scenario in a separate function that returns only `WeakReference`s (see `WindowLeakTest`). The earlier finding "a disposed EndpointsPanel is not collected (about 250 KB per window)" was this effect: bisecting the panel (create, show, load, select, send, compare, environment editor) shows every part collectable, and 40 cycles of the whole window with endpoints grow the heap by less than the 3 MB limit.
+
+## The Tests tab: test mapping
+
+The tab after History in the response area of the Request page lists the project's own tests that call the selected endpoint,
+found by static analysis. Nothing is run or sent by reading tests. The pipeline is the shape of route discovery with a second,
+independent engine (`TestMapEngine`), so it can be switched off without touching discovery:
+
+```
+ candidates            facts (context-free)              link (pure)                      publish
+ ----------            --------------------              -----------                      -------
+ word index of the     one read action per file,     ->  receivers, fixtures, bases,  ->  immutable TestIndex
+ client table, test    <= 4 threads, cached by           URLs and route names resolved,    (StateFlow); a pass with
+ paths only            (file id, stamp), bounded         matched against the current       identical input publishes
+                       by estimated bytes                RouteSnapshot                     nothing
+```
+
+Packages: `testmap` (pure, listed in `LayeringTest`: facts, the client table, conventions, the model, `EndpointMatcher`,
+`TestLinker`, `RequestLiterals`, `TestCommands`), `testmap.psi` (the extractor on PSI, candidates, the engine, the project
+service), `ui.model.TestsView` (pure view model of the tab), `ui.tests` (the tab, the row renderer, the quick-test page).
+
+- **Recognition is data.** `ClientSinks` is a table of client families (`ClientSink`): import origins of the constructors, factory
+  methods (`app.test_client()`), fixture names, `self.client` attributes with the base classes that provide them, the second
+  positional meaning, the match policy and the implicit verbs (werkzeug answers HEAD from a GET rule). Name-resolving functions
+  (`reverse`, `url_for`, `url_path_for`) are `NameResolver` rows. A receiver is a client only through a constructor origin, a
+  factory, a fixture that returns one, or a base class; a method name alone (`cache.get(...)`) is never enough.
+- **Which test styles count is data too.** `TestConventions.stylesByFramework` is the owner's scope: FastAPI and Flask endpoints are
+  reached by pytest and unittest tests only (functions, `Test*` classes without `__init__`, `unittest.TestCase`,
+  `IsolatedAsyncioTestCase`, pytest-asyncio / anyio async tests; a parametrized test is one test). Django and DRF endpoints add
+  the Django test case family (`django.test.TestCase`, `rest_framework.test.APITestCase`, ...). A test of another style that
+  happens to call a FastAPI endpoint is reported as not attributed with the reason "style not supported" and never listed.
+  Widening a framework is one more entry in its set.
+- **Facts are context-free** (`TestFileFacts`): imports as written, classes with bases, functions with parameters and marks,
+  client bindings, client calls with their URL argument as a `UrlFact` (`Text` expression, `Name`, `Named` for `reverse(...)`,
+  `Dynamic`) and their literal request parts, status asserts bound to the call that made the response, assignments of URLs.
+  The extractor never resolves; library imports do not resolve in a light project.
+- **Correct or absent.** A call is attributed only when its verb and complete path (or its route name with arguments that fit)
+  are exactly known and match exactly one endpoint: segment-wise unification with converter checks (`me` is not an `int`), a
+  computed segment matches parameters only, `path` parameters take one segment or more, ANY endpoints take every verb, a
+  trailing-slash difference is mapped with the mark "via redirect". Several matches are ambiguous (Flask alone prefers the
+  more static rule) and are not attributed. Every other call is an `UnattributedCall` with a `DiagnosticCode` reason and a
+  `Reach` (nothing, anywhere, or these endpoints); `TestIndex.isUntested` is true only when no call reaches the endpoint and no
+  unattributed call could be about it, otherwise the tab says "no test found". The prefix of `settings.X` is reported with its
+  name and never evaluated.
+- **Base classes in other files are read on demand.** A test case that derives from a project class (`from app.testutils import BaseCase`)
+  only has `self.client` when that file has been read, and such files are on no test path. After the first load the pure
+  `TestLinker.missingModules` names the modules that base classes are imported from but that were not read (library classes the
+  table knows are never asked for), the engine looks the names up as project files and reads them as dependencies, up to
+  `Limits.MAX_DEPENDENCY_ROUNDS` rounds. A call on `self.client` whose base class still is not known is counted
+  (`TestStats.unresolvedReceivers`), not guessed.
+- **The matcher is a trie** over the path segments of the endpoints (one edge per converter and framework), so a project whose
+  routes all begin with `/api/0/` costs the same as a small one; equal questions are answered once per link.
+- **Lazy.** The service starts inactive. `TestsPanel.setShown` is driven by the response area being on screen; hidden or
+  closed means changes only mark the index stale. A new route snapshot relinks without reading any file; an edit re-reads one file.
+- **Quick test.** `TestExecutionPanel` builds a `RequestForm` from the literal arguments of the selected call (parts that are not
+  fully literal stay empty and are named), binds it to a second `RequestFormPanel`, and sends it through its own `SendController`
+  built from the Request page's engine, secrets, environment and the one shared `HostGuard`, so a quick test is sent by exactly the
+  machinery of a normal request and the non-local host is confirmed once for both. Edits live in a bounded in-memory map per test
+  call; the test file and the project are never written. "Open in Request Tab" hands a copy of the form to the Request page.
+  "Run Test in the IDE" asks the IDE's own run configuration producers for the test (`TestLauncher`) and falls back to the copyable
+  command (`TestCommands`).
+- **Not built yet:** constants and helper functions in other files (only base classes are followed), `parametrize` expansion, prefix pins, plugin-owned
+  cases, line coverage, the endpoint list indicator and roll-ups, last-result icons (`TestStateStorage` key format not verified).

@@ -22,6 +22,7 @@ import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
+import com.routegenie.Limits
 import com.routegenie.RouteGenieBundle
 import com.routegenie.client.ErrorKind
 import com.routegenie.client.Header
@@ -36,6 +37,7 @@ import com.routegenie.client.curl.CurlParser
 import com.routegenie.client.curl.CurlShell
 import com.routegenie.client.curl.CurlUnsupportedException
 import com.routegenie.client.curl.ParsedCurl
+import com.routegenie.model.Endpoint
 import com.routegenie.ui.design.DesignTokens
 import com.routegenie.ui.design.EmptyState
 import com.routegenie.ui.design.Palette
@@ -43,11 +45,13 @@ import com.routegenie.ui.design.SectionHeader
 import com.routegenie.ui.design.StatusPill
 import com.routegenie.ui.design.ToolbarStyle
 import com.routegenie.ui.json.JsonDiffPanel
+import com.routegenie.ui.tests.TestsPanel
 import com.routegenie.ui.json.JsonViewerPanel
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.FlowLayout
 import java.awt.datatransfer.StringSelection
+import java.awt.event.HierarchyEvent
 import javax.swing.DefaultListModel
 import javax.swing.JButton
 import javax.swing.JCheckBox
@@ -71,6 +75,8 @@ class ResponsePanel(
     private val currentSpec: (Boolean) -> RequestSpec?,
     private val onRestore: (HistoryEntry) -> Unit,
     private val onImport: (ParsedCurl) -> Unit,
+    /** Builds the Tests tab after History (given its owner and the callback for the count on the tab title); null: the panel has no such tab. */
+    private val testsTab: ((Disposable, (Int) -> Unit) -> TestsPanel)? = null,
 ) : JBPanel<ResponsePanel>(BorderLayout()), Disposable, SendController.Listener {
     private val props = PropertiesComponent.getInstance()
     private var disposed = false
@@ -112,6 +118,7 @@ class ResponsePanel(
     }
 
     private var toolbarRefresh: (() -> Unit)? = null
+    private var testsPanel: TestsPanel? = null
 
     private val stopAction = object : DumbAwareAction(msg("req.stop"), msg("req.stop.tooltip"), AllIcons.Actions.Suspend) {
         override fun actionPerformed(e: AnActionEvent) = controller.cancel()
@@ -133,6 +140,15 @@ class ResponsePanel(
         tabs.addTab(msg("req.tab.request"), JBScrollPane(requestText))
         tabs.addTab(msg("req.tab.curl"), buildCurlTab())
         tabs.addTab(msg("req.tab.history"), buildHistoryTab())
+        testsTab?.let { build ->
+            val panel = build(this, ::setTestsBadge)
+            testsPanel = panel
+            tabs.addTab(msg("tests.tab"), panel)
+            // The tab strip being on screen is the signal that somebody may look: the test index is read only then.
+            addHierarchyListener { e ->
+                if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) panel.setShown(isShowing)
+            }
+        }
         add(buildHeader(), BorderLayout.NORTH)
         add(tabs, BorderLayout.CENTER)
         (bodyCards.layout as CardLayout).show(bodyCards, CARD_IDLE)
@@ -565,6 +581,19 @@ class ResponsePanel(
         updateStatus(controller.state)
     }
 
+    /** The endpoint the Request page shows (null: none); the Tests tab lists the tests that call it. */
+    fun showTests(endpoint: Endpoint?) {
+        testsPanel?.show(endpoint)
+    }
+
+    private fun setTestsBadge(count: Int) {
+        val panel = testsPanel ?: return
+        val i = tabs.indexOfComponent(panel)
+        if (i < 0) return
+        val title = if (count > 0) msg("tests.tab.count", if (count > Limits.TESTS_BADGE_MAX) "${Limits.TESTS_BADGE_MAX}+" else count.toString()) else msg("tests.tab")
+        if (tabs.getTitleAt(i) != title) tabs.setTitleAt(i, title)
+    }
+
     fun selectTab(title: String) {
         val i = (0 until tabs.tabCount).firstOrNull { tabs.getTitleAt(it) == title } ?: return
         tabs.selectedIndex = i
@@ -573,6 +602,7 @@ class ResponsePanel(
     // ---- test hooks ------------------------------------------------------------------------------------------------
 
     internal fun viewerForTest() = viewer
+    internal fun testsPanelForTest() = testsPanel
     internal fun eventsForTest() = events
     internal fun metaText() = meta.text
     internal fun noticeText() = notice.takeIf { it.isVisible }?.text

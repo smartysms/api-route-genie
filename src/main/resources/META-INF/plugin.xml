@@ -28,6 +28,7 @@
         <errorHandler implementation="com.routegenie.diagnostics.RouteGenieErrorReportSubmitter"/>
         <postStartupActivity implementation="com.routegenie.diagnostics.WhatsNewStartup"/>
         <projectService serviceImplementation="com.routegenie.discovery.core.RouteDiscoveryService"/>
+        <projectService serviceImplementation="com.routegenie.testmap.psi.TestMapService"/>
         <projectService serviceImplementation="com.routegenie.pinside.PinsService"/>
         <toolWindow id="RouteGenie" anchor="right" icon="/icons/routeGenie.svg" canCloseContents="false"
                     factoryClass="com.routegenie.ui.RouteGenieToolWindowFactory"/>

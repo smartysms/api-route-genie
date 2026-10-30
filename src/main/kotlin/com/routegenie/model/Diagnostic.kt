@@ -20,7 +20,19 @@ enum class DiagnosticCode {
     SCHEMA_FIELD_SKIPPED,
     SCHEMA_NOT_DETERMINED,
     MOUNTED_APP,
-    UNSUPPORTED_PATTERN;
+    UNSUPPORTED_PATTERN,
+
+    // Why a client call in a test is not attributed to an endpoint (see testmap.TestLinker).
+    TEST_URL_DYNAMIC,
+    TEST_URL_RELATIVE,
+    TEST_CONSTANT_UNRESOLVED,
+    TEST_NAME_UNRESOLVED,
+    TEST_NO_ENDPOINT,
+    TEST_AMBIGUOUS,
+    TEST_EXTERNAL_URL,
+    TEST_HELPER_OPAQUE,
+    TEST_STYLE_UNSUPPORTED,
+    TEST_FACTS_FAILED;
 
     val bundleKey: String get() = "diagnostic.${name.lowercase()}"
 }

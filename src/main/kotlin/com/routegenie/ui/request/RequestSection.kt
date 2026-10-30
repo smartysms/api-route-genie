@@ -42,6 +42,11 @@ import com.routegenie.clientide.passwordSafeFor
 import com.routegenie.model.Endpoint
 import com.routegenie.model.HttpMethod
 import com.routegenie.schema.BodyTemplateService
+import com.routegenie.testmap.TestIndexSource
+import com.routegenie.testmap.psi.TestMapService
+import com.routegenie.ui.tests.QuickTestHost
+import com.routegenie.ui.tests.TestExecutionPanel
+import com.routegenie.ui.tests.TestsPanel
 import com.routegenie.ui.EndpointDetailsSection
 import com.routegenie.ui.EndpointNavigator
 import com.routegenie.ui.design.DesignTokens
@@ -96,7 +101,9 @@ class RequestSection(
     /** Owner of the response on screen, so replaced responses lose their spill file. */
     responses: ResponseSlot = project.getService(RouteGenieClientService::class.java).responses,
     /** Where random upload files are written; the IDE's temporary folder in the window, a throw-away folder in tests. */
-    fileStore: com.routegenie.files.GeneratedFileStore = defaultFileStore(),
+    private val fileStore: com.routegenie.files.GeneratedFileStore = defaultFileStore(),
+    /** The test mapping the Tests tab reads: the project's service in the window, a fake in tests. Created only when the tab is shown. */
+    private val tests: () -> TestIndexSource = { TestMapService.getInstance(project) },
 ) : EndpointDetailsSection, Disposable {
     override val title: String = msg("req.title")
 
@@ -121,7 +128,7 @@ class RequestSection(
     private var envEditor: EnvironmentEditorPanel? = null
     private val requestCards = JPanel(CardLayout())
     private var refreshingEnvCombo = false
-    private val response = ResponsePanel(project, this, controller, history, ::specForCurl, ::restore, ::import)
+    private val response = ResponsePanel(project, this, controller, history, ::specForCurl, ::restore, ::import, testsTab = ::buildTestsTab)
     private val send = JButton(msg("req.send"), AllIcons.Actions.Execute).apply { toolTipText = msg("req.send.tooltip") }
     private val cancel = JButton(msg("req.cancel"), AllIcons.Actions.Suspend).apply { isVisible = false }
     private val splitter = OnePixelSplitter(true, UiKeys2.SPLITTER, Limits.WORKSPACE_REQUEST_PROPORTION)
@@ -240,6 +247,7 @@ class RequestSection(
 
     override fun show(endpoint: Endpoint?) {
         if (disposed) return
+        response.showTests(endpoint)
         if (endpoint == null) {
             current = null
             (cards.layout as CardLayout).show(cards, CARD_NONE)
@@ -262,6 +270,37 @@ class RequestSection(
         (cards.layout as CardLayout).show(cards, CARD_FORM)
         response.refreshCurl()
         updateButtons()
+    }
+
+    // ---- the Tests tab -------------------------------------------------------------------------------------------------
+
+    /** What the execution page of the Tests tab borrows from this page; built when the first test is selected. */
+    private val quickHost: QuickTestHost by lazy {
+        object : QuickTestHost {
+            override val secrets get() = this@RequestSection.secrets
+            override val environment get() = env
+            override val bodyTemplates get() = this@RequestSection.bodyTemplates
+            override val fileStore get() = this@RequestSection.fileStore
+            override val engine get() = engineFactory
+            override val guard get() = state.hostGuard
+            override val ui get() = hooks
+            override fun openInRequest(form: RequestForm) = adoptForm(form)
+        }
+    }
+
+    private fun buildTestsTab(parent: Disposable, onBadge: (Int) -> Unit) =
+        TestsPanel(project, parent, tests, onBadge, executionFactory = { owner -> TestExecutionPanel(project, owner, quickHost) })
+
+    /** "Open in Request tab": the edited request of a quick test becomes the form of this page (in memory; nothing is sent). */
+    internal fun adoptForm(form: RequestForm) {
+        if (disposed) return
+        forms[form.endpoint.key] = form
+        current = form
+        formPanel.bind(form, env.current().baseUrl)
+        response.refreshCurl()
+        response.selectTab(msg("req.tab.body"))
+        updateButtons()
+        revealSelf?.invoke()
     }
 
     // ---- sending -----------------------------------------------------------------------------------------------------

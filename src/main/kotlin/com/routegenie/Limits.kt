@@ -566,4 +566,56 @@ object Limits {
     /** Reading and validating a pins file of 500 entries, and linking (applying a changed pin, or noticing settings) a project of 300 route files with 900 routes. */
     const val BUDGET_PINS_PARSE_MS = 20L
     const val BUDGET_PINS_APPLY_MS = 100L
+
+    // --- Tests tab: project tests that call the selected endpoint ---------------------------------------------------
+
+    /** Re-reading one edited test file of typical size (up to 50 KB) from its PSI. */
+    const val BUDGET_TEST_REEXTRACT_ONE_FILE_MS = 50L
+
+    /** One edited test file read again and the calls linked again (candidates, stamps, extraction of the one file, link). */
+    const val BUDGET_TEST_REFRESH_ONE_FILE_MS = 100L
+
+    /** Pure link of 20,000 test calls against 5,000 endpoints. */
+    const val BUDGET_TEST_LINK_20K_CALLS_MS = 250L
+
+    /** Cold index (read and link) per MB of selected test source; runs in the background. */
+    const val BUDGET_TEST_COLD_INDEX_MS_PER_MB = 650L
+
+    /** Fixed cost of a cold pass on top of the per-MB budget: word-index queries, one read action per file, the link (measured on a small project, where it dominates). */
+    const val BUDGET_TEST_COLD_INDEX_FIXED_MS = 700L
+
+    /** Upper bound of the estimated bytes of cached per-file test facts. */
+    const val MAX_TEST_FACTS_CACHE_BYTES = 48L * 1024 * 1024
+
+    /** Mapped plus unattributed calls one snapshot keeps; beyond it the lists are cut and the statistics say so. */
+    const val TEST_CALLS_MAX_TOTAL = 200_000
+
+    /** Client calls one test file contributes; a generated file of thousands of calls is cut. */
+    const val TEST_CALLS_MAX_PER_FILE = 5_000
+
+    /** Calls to a name-resolving function and fixture definitions followed from a fixture to the fixture it returns. */
+    const val TEST_FIXTURE_DEPTH = 3
+
+    /** Words of the client table used for the word index (constructors, fixtures, class attributes, base classes). */
+    const val TEST_CLIENT_WORDS_MAX = 64
+
+    /** Rows listed for one endpoint in the Tests tab before the list is cut. */
+    const val TESTS_SHOWN_PER_ENDPOINT_MAX = 500
+
+    /** Initial share of the Tests tab height taken by the list when a test is selected. */
+    const val TESTS_LIST_PROPORTION = 0.3f
+
+    /** The count on the tab title stops here ("99+"). */
+    const val TESTS_BADGE_MAX = 99
+
+    /** Largest literal argument (dict, list) of a test call that is read as the request: nodes, nesting depth, rendered characters. */
+    const val TEST_LITERAL_MAX_NODES = 400
+    const val TEST_LITERAL_MAX_DEPTH = 12
+    const val TEST_LITERAL_MAX_CHARS = 64 * 1024
+
+    /** Edited quick-test requests remembered per test key in memory (least recently used first out). */
+    const val TEST_QUICK_INPUTS_MAX = 64
+
+    /** Showing the execution view (selecting a test and filling the editor) on a warm index. */
+    const val BUDGET_TEST_SELECT_MS = 50L
 }

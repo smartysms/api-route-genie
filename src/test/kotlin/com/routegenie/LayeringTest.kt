@@ -37,6 +37,10 @@ class LayeringTest {
         "frameworks/django/RouteText.kt", "frameworks/django/DjangoCatalog.kt",
         "frameworks/fastapi/FastApiLinker.kt", "frameworks/fastapi/FastApiCatalog.kt",
         "frameworks/flask/FlaskLinker.kt", "frameworks/flask/FlaskCatalog.kt",
+        // The test mapping: facts, the client table, conventions, the model, matching, the linker and the literal request parts.
+        "testmap/TestFacts.kt", "testmap/ClientSinks.kt", "testmap/TestConventions.kt", "testmap/TestModel.kt",
+        "testmap/EndpointMatcher.kt", "testmap/TestLinker.kt", "testmap/RequestLiterals.kt", "testmap/TestCommands.kt",
+        "testmap/TestIndexSource.kt",
     )
 
     @Test

@@ -1,0 +1,9 @@
+MAPPED DELETE /store/remove/{pk}/  <-  shop/tests.py::ShopTests::test_remove @20 name=shop:remove
+MAPPED GET /  <-  shop/tests.py::ShopTests::test_index @10 expects=200 name=s:index
+MAPPED GET /admin/  <-  shop/tests.py::ShopTests::test_admin @32
+MAPPED GET /store/item/{pk}/  <-  shop/tests.py::ShopTests::test_detail_by_literal @17
+MAPPED GET /store/item/{pk}/  <-  shop/tests.py::ShopTests::test_detail_by_name @14 name=shop:detail
+MAPPED POST /store/form/  <-  shop/tests.py::ShopTests::test_form_post @23
+NOT ATTRIBUTED shop/tests.py:26  NAME_UNRESOLVED (shop:nope)  reach=Unrelated
+NOT ATTRIBUTED shop/tests.py:29  NO_ENDPOINT (GET /nowhere/)  reach=Unrelated
+STATS files=1 functions=8 calls=8 mapped=6 unattributed=2

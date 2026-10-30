@@ -1,0 +1,14 @@
+MAPPED DELETE /api/v1/users/admin/{user_id}  <-  tests/test_items.py::TestUsers::test_admin_delete @41
+MAPPED GET /api/latest/items/  <-  tests/test_items.py::test_latest @24 mark=SKIPPED
+MAPPED GET /api/v1/items/  <-  tests/test_items.py::test_list @8 expects=200
+MAPPED GET /api/v1/items/  <-  tests/test_items.py::test_trailing_slash_redirect @32 via-redirect
+MAPPED GET /api/v1/items/{item_id}  <-  tests/test_items.py::test_read @14 expects=200
+MAPPED GET /api/v1/users/me  <-  tests/test_items.py::TestUsers::test_me @37 expects=200
+MAPPED GET /health  <-  tests/test_health.py::test_health @2 expects=200
+MAPPED GET /multi  <-  tests/test_misc.py::test_multi @15
+MAPPED POST /api/v1/items/  <-  tests/test_items.py::test_create @18 expects=201
+MAPPED POST /multi  <-  tests/test_misc.py::test_multi @14
+NOT ATTRIBUTED tests/test_items.py:28  NO_ENDPOINT (DELETE /api/v1/items/1)  reach=Unrelated
+NOT ATTRIBUTED tests/test_misc.py:10  EXTERNAL_URL (example.org)  reach=Unrelated
+NOT ATTRIBUTED tests/test_misc.py:6  CONSTANT_UNRESOLVED (settings.API_V1_STR)  reach=Anywhere
+STATS files=3 functions=13 calls=13 mapped=10 unattributed=3

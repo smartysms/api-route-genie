@@ -359,3 +359,92 @@ in this run, machine busy with other builds).
   Recall against grep counts is line based and includes docstrings.
 - The first runs shared the machine with other builds; only the final table comes from a quiet machine, and variation
   between runs for cold times of the small repos is large (see Machine).
+
+## Tests tab: the test mapping on the same corpora
+
+Measured on 2026-10-30 with `src/test/kotlin/com/routegenie/bench/TestCorpusBenchmarkTest.kt` (opt-in, same switch, heap and init
+script as above). Per repository, in one JVM: the real route providers and `RouteDiscoveryEngine` find the endpoints (cold), then
+the real `TestMapEngine` reads the test files and maps their calls (cold, empty cache), 5 warm passes, 10 edits of the test file with
+the most mapped calls (append a probe test, refresh, revert). The repositories were read, never executed. Machine as above (16
+threads; the engine uses 4 workers); other builds ran on the machine at times, so single numbers move by 20 to 30 percent between
+runs (the first run of this section had django-rest-framework at 404 ms per MB, the final one at 888). Raw output:
+`build/reports/routegenie/bench/<repo>-tests.txt` and `<repo>-tests-unattributed.tsv`.
+
+"Files read" are the candidates (test paths with a client word) plus the project files that base classes of test cases are imported
+from (the dependency rounds). The tests of a repository are read after its routes, in the same JVM.
+
+| repo | endpoints | files read / .py files | MB read | cold ms | ms per MB | test functions | client calls | mapped | not attributed | endpoints reached |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| full-stack-fastapi-template | 0 | 7 / 43 | 0.03 | 22 | 685 (fixed cost) | 48 | 53 | 0 | 53 | 0 |
+| fastapi | 1,779 | 502 / 1,219 | 3.29 | 1,020 | 311 | 2,611 | 2,796 | 236 (8%) | 2,560 | 120 (6.7%) |
+| flask | 152 | 27 / 83 | 0.19 | 86 | 444 | 326 | 344 | 80 (23%) | 264 | 54 (35.5%) |
+| django-rest-framework | 139 | 74 / 155 | 0.90 | 801 | 888 (first repo: JIT) | 1,338 | 139 | 65 (47%) | 74 | 34 (24.5%) |
+| django | 740 | 906 / 2,937 | 11.13 | 1,864 | 167 | 16,740 | 2,029 | 632 (31%) | 1,397 | 186 (25.1%) |
+| superset | 11 | 312 / 3,069 | 9.38 | 1,342 | 143 | 5,620 | 667 | 15 | 652 | 3 (27.3%) |
+| netbox | 0 | 159 / 1,293 | 4.68 | 676 | 144 | 5,285 | 200 | 0 | 200 | 0 |
+| sentry | 1,222 | 2,025 / 8,422 | 30.11 | 4,551 | 151 | 30,795 | 5,590 | 3,047 (54.5%) | 2,543 | 476 (39.0%) |
+
+Why calls are not attributed (counts per reason; "computed URL" is a URL the code builds at runtime, for example a `parametrize` argument):
+
+| repo | reasons |
+| --- | --- |
+| full-stack-fastapi-template | constant unresolved 51 (`settings.API_V1_STR`, every test call of the official template), helper 2 |
+| fastapi | ambiguous 2,016, computed URL 441, constant unresolved 46, no endpoint 39, helper 11, relative URL 7 |
+| flask | ambiguous 220, no endpoint 20, computed URL 15, helper 4, constant unresolved 3, external host 2 |
+| django-rest-framework | ambiguous 33, no endpoint 27, helper 10, name unresolved 2, constant unresolved 2 |
+| django | name unresolved 786, ambiguous 345, computed URL 102, no endpoint 89, constant unresolved 57, helper 16, relative URL 2; 9 calls on `self.client` of a base class not found |
+| superset | no endpoint 420, helper 201, computed URL 18, relative URL 7, constant unresolved 6; 1,137 calls on `self.client` of a base class that is not in the client table |
+| netbox | helper 126, name unresolved 47, no endpoint 18, computed URL 9; 1,095 calls on `self.client` of a base class not found (no endpoints are discovered for NetBox) |
+| sentry | constant unresolved 1,273 (mostly `self.url`), computed URL 454, no endpoint 446, helper 258, name unresolved 104, ambiguous 8 |
+
+Readings (what the owner should take from it):
+
+- **FastAPI and Flask literal calls are found completely; what is reached is limited by ambiguity and discovery, not by parsing.**
+  The Kotlin extractor sees 2,796 client calls in the FastAPI repository (the Python scanner of the plan: 2,812, -0.6%), 344 in Flask
+  (346, -0.6%) and 53 in the official template (53). 2,016 of the FastAPI calls match several endpoints because every test file
+  of that repository builds its own small app (`client.get("/")` matches 150 endpoints named `/` in `docs_src`); in a project with
+  one application this is the Sentry shape (8 of 5,590). They are listed under "Not Attributed", never under an endpoint. An app
+  binding (plan Q11, `Endpoint.root`) is what removes it; not built.
+- **The official FastAPI template shows no test at all** until the prefix of `settings.API_V1_STR` can be pinned (plan Q2): 51 of its
+  53 calls say so, by name, and the tab then shows no "Untested" chip for any endpoint (an unresolved URL could be anything).
+- **Sentry, the plan's S2 exit case:** 476 of 1,222 endpoints (39.0%, the criterion was more than 25%) are reached by 2,558 tests. This
+  needs the dependency rounds: Sentry tests derive from `sentry.testutils.cases.APITestCase`, a project class outside the test
+  directories. Without reading those files only 81 client calls and 5 endpoints were found (first run of this section). The
+  remaining gap is `self.url` (1,273 calls, properties and attributes defined elsewhere), URLs built by helpers and the 5,098
+  `get_success_response` helper calls of the plan's scan, which are not client calls here and need the configurable helper rows of
+  plan slice 9. The scanner's 6,127 direct calls compare with 5,590 here (-9%).
+- **Django core:** 786 `reverse("...")` calls name routes that discovery does not list (admin model URLs, URLconfs swapped per test
+  class); they are reported as "route name matches no endpoint that fits", not guessed. 632 calls map (31%), 186 endpoints (25%) are reached.
+- **DRF:** the plan's scanner counted 484 calls, 331 of them on `APIRequestFactory`/`RequestFactory` receivers that build a request
+  for a view and never go through URL routing; those are not client calls here by design (plan: view-direct, not in v1). The client
+  based calls are 153 for the scanner and 139 here (-9%); the difference was not traced further.
+- **NetBox and Superset:** discovery finds no (NetBox) or 11 (Superset) endpoints, so nothing can map. 1,095 and 1,137 calls on
+  `self.client` are counted as "client attribute of a test case whose base class was not found". NetBox imports its base classes
+  through a package that re-exports them (`utilities/testing/__init__.py` has `from .base import *`), which the dependency rounds do
+  not follow yet. Superset's `SupersetTestCase` derives from `flask_testing.TestCase`, a library class that is not in the client table
+  (a new row of `ClientSinks`).
+
+Speed against the budgets of the plan (Appendix C):
+
+| what | budget | measured |
+| --- | --- | --- |
+| cold index per MB of selected test source (background) | 650 ms | 143 to 444 ms on every repository from 0.19 MB up, except the first repository of the run (888, JIT warm-up); the 0.03 MB template is dominated by a fixed cost (22 ms in all) |
+| link of 20,000 calls against 5,000 endpoints (pure) | 250 ms | median 160 ms (`TestLinkPerfTest`) |
+| re-read one edited file of about 34 KB (walk over a parsed tree) | 50 ms | median 14 to 23 ms; with the platform building the tree first 53 to 110 ms (parsing alone costs 0.75 to 0.8 s per MB) |
+| one edited test file, refresh (candidates, stamps, one extraction, link), 150 files | 100 ms | median 52 to 69 ms (`TestMapLeakAndSpeedTest`) |
+| the same on the real repositories (file with the most calls) | 100 ms | superset 46, flask 74, django-rest-framework 110; fastapi 150, django 152, sentry 337 (a 163 KB file) over budget |
+| show the tab for an endpoint, select a test (500 rows) | 50 ms | 1.4 ms and 4 to 8 ms |
+| a pass with nothing changed | - | fastapi 34 ms, django 77 ms, sentry 140 ms |
+
+The edit refresh is over the budget on the three big repositories. Part of it is the pass itself even when nothing changed (stamp
+comparison of up to 2,000 files, word index lookup, the dependency lookups), the rest is the platform building the syntax tree of the
+edited document (about 1.7 ms per KB, the files are 22 to 163 KB) and relinking 2,000 to 5,000 calls. An incremental link (only the
+calls of the changed file and of the files that depend on it) would remove the last part; it is not built.
+
+Memory: the facts cache holds 13.4 MB for Sentry (2,025 entries, bound 48 MB), 5.2 MB for Django, 3.0 MB for FastAPI. The heap
+retained after the cold pass is 17 MB for Sentry and under 10 MB elsewhere (relative to the fixture, GC timing makes small numbers
+noisy). The UI-thread gap during a pass was not measured in this benchmark; the engine does no PSI work on the UI thread by construction
+(`smartReadAction` on a pool of at most 4 threads).
+
+Not measured: 50 edit cycles for heap growth on the corpora (the leak tests in `TestMapLeakAndSpeedTest` cover cycles of the engine and
+the tab with a 3 MB limit), the Sentry and Superset numbers after package re-exports are followed.
