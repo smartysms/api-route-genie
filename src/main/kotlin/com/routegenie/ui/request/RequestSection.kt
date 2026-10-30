@@ -15,12 +15,15 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.wm.ToolWindowType
 import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
+import com.routegenie.Ids
 import com.routegenie.Limits
 import com.routegenie.RouteGenieBundle
 import com.routegenie.client.BodyTemplateSource
@@ -123,6 +126,7 @@ class RequestSection(
     private val cards = JPanel(CardLayout())
     private var layoutChoice = WorkspaceLayout.entries.firstOrNull { it.name == props.getValue(PROP_LAYOUT) } ?: WorkspaceLayout.AUTO
     private var listVisible = true
+    private var focusResponse = false
     var revealSelf: (() -> Unit)? = null
 
     override val component: JComponent = JBPanel<JBPanel<*>>(BorderLayout())
@@ -165,7 +169,21 @@ class RequestSection(
     private fun toolbarGroup() = DefaultActionGroup().apply {
         add(object : ToggleAction(msg("req.hide_list"), msg("req.hide_list.tooltip"), AllIcons.Actions.SplitVertically) {
             override fun isSelected(e: AnActionEvent) = !listVisible
-            override fun setSelected(e: AnActionEvent, state: Boolean) { listVisible = !state; setListVisible(listVisible) }
+            override fun setSelected(e: AnActionEvent, state: Boolean) { listVisible = !state; applyListVisibility() }
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        })
+        add(object : ToggleAction(msg("req.focus_response"), msg("req.focus_response.tooltip"), AllIcons.General.ExpandComponent) {
+            override fun isSelected(e: AnActionEvent) = focusResponse
+            override fun setSelected(e: AnActionEvent, state: Boolean) = focusOnResponse(state)
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        })
+        add(object : ToggleAction(msg("req.separate_window"), msg("req.separate_window.tooltip"), AllIcons.Actions.MoveToWindow) {
+            override fun isSelected(e: AnActionEvent) = inSeparateWindow()
+            override fun setSelected(e: AnActionEvent, state: Boolean) = showInSeparateWindow(state)
+            override fun update(e: AnActionEvent) {
+                super.update(e)
+                e.presentation.isEnabled = toolWindow() != null
+            }
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
         })
         val layout = DefaultActionGroup(msg("req.layout"), true).apply { templatePresentation.icon = AllIcons.Actions.SplitHorizontally }
@@ -179,6 +197,30 @@ class RequestSection(
             })
         }
         add(layout)
+    }
+
+    /** The endpoint list is shown only when the user did not hide it and the response is not in focus. */
+    private fun applyListVisibility() = setListVisible(listVisible && !focusResponse)
+
+    /**
+     * Gives the whole page to the response: the request form and the endpoint list go away, and come back as they were when
+     * this is switched off. Ctrl+Enter still sends, so the call can be repeated while reading the answer.
+     */
+    internal fun focusOnResponse(on: Boolean) {
+        if (focusResponse == on) return
+        focusResponse = on
+        splitter.firstComponent = if (on) null else requestCards
+        splitter.revalidate()
+        applyListVisibility()
+    }
+
+    private fun toolWindow() = ToolWindowManager.getInstance(project).getToolWindow(Ids.TOOL_WINDOW)
+
+    private fun inSeparateWindow() = toolWindow()?.type == ToolWindowType.WINDOWED
+
+    /** Moves the whole window out of the IDE frame into its own resizable window (or docks it again). */
+    private fun showInSeparateWindow(on: Boolean) {
+        toolWindow()?.setType(if (on) ToolWindowType.WINDOWED else ToolWindowType.DOCKED, null)
     }
 
     /** Wide window: request at the left, response at the right. Narrow: stacked. A fixed choice wins. */
@@ -344,6 +386,8 @@ class RequestSection(
     internal fun cancelButton() = cancel
     internal fun currentForm() = current
     internal fun splitterVertical() = splitter.orientation
+    internal fun requestSideShown() = splitter.firstComponent != null
+    internal fun isFocusOnResponse() = focusResponse
     internal fun environmentEditorForTest(): EnvironmentEditorPanel? = envEditor
     internal fun environmentNames(): List<String> = (0 until envCombo.itemCount).map { envCombo.getItemAt(it) }
     internal fun chooseEnvironmentForTest(name: String) { envCombo.selectedItem = name }

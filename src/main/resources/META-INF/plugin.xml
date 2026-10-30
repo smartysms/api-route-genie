@@ -25,6 +25,8 @@
     </extensionPoints>
 
     <extensions defaultExtensionNs="com.intellij">
+        <errorHandler implementation="com.routegenie.diagnostics.RouteGenieErrorReportSubmitter"/>
+        <postStartupActivity implementation="com.routegenie.diagnostics.WhatsNewStartup"/>
         <projectService serviceImplementation="com.routegenie.discovery.core.RouteDiscoveryService"/>
         <toolWindow id="RouteGenie" anchor="right" icon="/icons/routeGenie.svg" canCloseContents="false"
                     factoryClass="com.routegenie.ui.RouteGenieToolWindowFactory"/>

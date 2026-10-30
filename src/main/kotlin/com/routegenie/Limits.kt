@@ -426,4 +426,13 @@ object Limits {
 
     /** The pure sample generator for a schema of 500 fields. */
     const val BUDGET_SAMPLE_500_FIELDS_MS = 20L
+
+    /** Error report: longest address opened in the browser (GitHub refuses about 8000), error events included, and title length. */
+    const val REPORT_MAX_URL_CHARS = 7_000
+    const val REPORT_MAX_EVENTS = 3
+    const val REPORT_TITLE_MAX_CHARS = 90
+
+    /** Error report: the stack trace is cut to this many characters at most, and never below the floor when shrinking to fit. */
+    const val REPORT_MAX_TRACE_CHARS = 4_000
+    const val REPORT_MIN_TRACE_CHARS = 400
 }

@@ -166,6 +166,27 @@ class RequestSectionTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(owner) }
     }
 
+    fun testFocusOnResponseHidesTheFormAndTheListAndRestoresThemAsTheyWere() {
+        val owner = owner()
+        try {
+            val listShown = mutableListOf<Boolean>()
+            val s = RequestSection(
+                project, owner, setListVisible = { listShown += it }, engine = { engine }, bodyTemplates = { templates }, ui = ui,
+                state = state, secretStore = store, secretExecutor = directExecutor, responses = com.routegenie.client.ResponseSlot(),
+            )
+            assertTrue(s.requestSideShown())
+            s.focusOnResponse(true)
+            assertTrue(s.isFocusOnResponse())
+            assertFalse("the response gets the whole page", s.requestSideShown())
+            assertEquals("the list goes away too", listOf(false), listShown)
+            s.focusOnResponse(false)
+            assertTrue(s.requestSideShown())
+            assertEquals("and comes back, because the user had not hidden it", listOf(false, true), listShown)
+            s.focusOnResponse(false)
+            assertEquals("switching off twice changes nothing", listOf(false, true), listShown)
+        } finally { Disposer.dispose(owner) }
+    }
+
     fun testCreatingTheSectionIsWithinTheWindowOpenBudget() {
         PerfBudget.assertWithin("request-section-create", Limits.BUDGET_WINDOW_OPEN_MS, warmups = 3, runs = 7) {
             val owner = owner()

@@ -19,4 +19,7 @@ object Branding {
 
     /** Name of the per-project folder for files meant to be shared with the team. */
     val DIR: String = bundle.getString("product.dir")
+
+    /** GitHub repository (owner/name) where issues and releases live. */
+    val REPO: String = bundle.getString("product.repo")
 }

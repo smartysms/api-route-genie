@@ -31,7 +31,7 @@ jobs:
           base=$(grep '^version=' gradle.properties | cut -d= -f2 | cut -d. -f1,2)
           echo "version=${base}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
       - name: Build the plugin zip
-        run: ./gradlew buildPlugin -Pversion=${{ steps.v.outputs.version }} --console=plain
+        run: ./gradlew buildPlugin exportChangeNotes -Pversion=${{ steps.v.outputs.version }} --console=plain
       - name: Write updatePlugins.xml
         env:
           VERSION: ${{ steps.v.outputs.version }}
@@ -48,6 +48,7 @@ jobs:
               <idea-version since-build="${since}"/>
               <name>${name}</name>
               <description>${summary}</description>
+              <change-notes><![CDATA[$(cat build/change-notes.html)]]></change-notes>
             </plugin>
           </plugins>
           XML
@@ -57,5 +58,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.v.outputs.version }}
         run: |
+          { cat build/release-notes.md; echo; echo "Automatic build of ${GITHUB_SHA}."; } > release-body.md
           gh release create "v${VERSION}" build/distributions/*.zip updatePlugins.xml \
-            --title "v${VERSION}" --notes "Automatic build of ${GITHUB_SHA}." --latest
+            --title "v${VERSION}" --notes-file release-body.md --latest
