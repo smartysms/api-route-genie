@@ -1,10 +1,12 @@
 package com.routegenie.ui.design
 
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.IconLoader
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.routegenie.model.HttpMethod
+import java.awt.GraphicsEnvironment
 import java.awt.image.BufferedImage
 import javax.swing.JComponent
 
@@ -12,11 +14,21 @@ import javax.swing.JComponent
 class DesignComponentsTest : BasePlatformTestCase() {
     private val originalDark = !JBColor.isBright()
     private val owner = Disposer.newDisposable("design components")
+    private var iconsWereOn = true
+
+    override fun setUp() {
+        super.setUp()
+        // The platform starts a JVM without a display (every CI runner) with icons switched off, and then every icon reports the 1x1
+        // placeholder instead of its image. The IDE switches them on at startup, so a test that looks at icons has to do the same.
+        iconsWereOn = !GraphicsEnvironment.isHeadless()
+        IconLoader.activate()
+    }
 
     override fun tearDown() {
         try {
             if (!Disposer.isDisposed(owner)) Disposer.dispose(owner)
             JBColor.setDark(originalDark)
+            if (!iconsWereOn) IconLoader.deactivate()
         } finally {
             super.tearDown()
         }
@@ -155,14 +167,40 @@ class DesignComponentsTest : BasePlatformTestCase() {
         assertNotNull(loader.getResource("/icons/routeGenie_dark.svg"))
     }
 
+    /** The size the SVG at [path] declares in its root element (`<svg width="32" height="32" ...>`). */
+    private fun declaredSize(path: String): Pair<Int, Int> {
+        val url = RouteGenieIcons::class.java.getResource(path)
+        assertNotNull("$path is missing", url)
+        val root = Regex("<svg\\b[^>]*>").find(url!!.readText())?.value
+        assertNotNull("$path has no <svg> element", root)
+        fun attribute(name: String): Int {
+            val value = Regex("\\s$name=\"(\\d+)\"").find(root!!)?.groupValues?.get(1)
+            assertNotNull("$path does not declare a $name", value)
+            return value!!.toInt()
+        }
+        return attribute("width") to attribute("height")
+    }
+
     fun testIconsLoadWithTheSizeTheirFilesDeclare() {
-        val icons = listOf(
-            RouteGenieIcons.SEND, RouteGenieIcons.STOP, RouteGenieIcons.COPY, RouteGenieIcons.CURL, RouteGenieIcons.HISTORY, RouteGenieIcons.STREAM,
-            RouteGenieIcons.CLEAR, RouteGenieIcons.ENVIRONMENT, RouteGenieIcons.AUTH, RouteGenieIcons.PANEL_HIDE, RouteGenieIcons.SPLIT_ORIENTATION,
-            RouteGenieIcons.PRETTY_PRINT, RouteGenieIcons.WRAP, RouteGenieIcons.SEARCH, RouteGenieIcons.PLUGIN,
+        val design = mapOf(
+            "send" to RouteGenieIcons.SEND, "stop" to RouteGenieIcons.STOP, "copy" to RouteGenieIcons.COPY, "curl" to RouteGenieIcons.CURL,
+            "history" to RouteGenieIcons.HISTORY, "stream" to RouteGenieIcons.STREAM, "clear" to RouteGenieIcons.CLEAR,
+            "environment" to RouteGenieIcons.ENVIRONMENT, "auth" to RouteGenieIcons.AUTH, "panelHide" to RouteGenieIcons.PANEL_HIDE,
+            "splitOrientation" to RouteGenieIcons.SPLIT_ORIENTATION, "prettyPrint" to RouteGenieIcons.PRETTY_PRINT, "wrap" to RouteGenieIcons.WRAP,
+            "search" to RouteGenieIcons.SEARCH, "emptyRoutes" to RouteGenieIcons.EMPTY_ROUTES, "emptySearch" to RouteGenieIcons.EMPTY_SEARCH,
+            "emptyProject" to RouteGenieIcons.EMPTY_PROJECT,
         )
-        icons.forEach { assertEquals(it.toString(), it.iconWidth, it.iconHeight) }
-        val small = icons.first().iconWidth
+        assertEquals("a design icon was added without being listed here", RouteGenieIcons.DESIGN_FILE_NAMES.toSet(), design.keys)
+        val all = design.mapKeys { "${RouteGenieIcons.DESIGN_DIR}${it.key}.svg" } +
+            mapOf("/icons/routeGenie.svg" to RouteGenieIcons.PLUGIN, "/icons/routeGenieGutter.svg" to RouteGenieIcons.GUTTER)
+        // Each icon, as the platform loads it, is as large as its own file says. An icon that did not load at all reports 1 x 1.
+        all.forEach { (path, icon) ->
+            val (width, height) = declaredSize(path)
+            assertEquals("$path width", width, icon.iconWidth)
+            assertEquals("$path height", height, icon.iconHeight)
+            assertEquals("$path is not square", icon.iconWidth, icon.iconHeight)
+        }
+        val small = RouteGenieIcons.SEND.iconWidth
         listOf(RouteGenieIcons.EMPTY_ROUTES, RouteGenieIcons.EMPTY_SEARCH, RouteGenieIcons.EMPTY_PROJECT).forEach {
             assertTrue("$it is ${it.iconWidth} wide, the small icons are $small", it.iconWidth > small)
         }
