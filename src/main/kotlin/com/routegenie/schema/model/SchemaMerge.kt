@@ -62,6 +62,7 @@ object SchemaMerge {
             uniqueItems = a.uniqueItems || b.uniqueItems,
             minProperties = listOfNotNull(a.minProperties, b.minProperties).maxOrNull(),
             maxProperties = listOfNotNull(a.maxProperties, b.maxProperties).minOrNull(),
+            propertyNames = a.propertyNames ?: b.propertyNames,
             nullable = a.nullable && b.nullable,
             readOnly = a.readOnly || b.readOnly,
             writeOnly = a.writeOnly || b.writeOnly,

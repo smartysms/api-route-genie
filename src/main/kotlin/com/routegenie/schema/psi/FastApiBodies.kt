@@ -155,7 +155,7 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
         var embed = false
         val value = declaredDefault(marker, default)
         if (marker != null) {
-            schema = Constraints.applyCall(schema, marker)
+            schema = Constraints.applyCall(schema, marker, mapper.constants) ?: return fail(Gap.UNRESOLVED_TYPE, "constraints of body parameter $name")
             embed = PyLiterals.bool(PyLiterals.keyword(marker, FastApiBodyCatalog.KEY_EMBED)) == true
             PyLiterals.string(PyLiterals.keyword(marker, Keys.ALIAS))?.let { key = it }
         }
@@ -179,7 +179,7 @@ internal class FastApiBodies(private val mapper: TypeMapper, private val pathNam
 
     private fun form(name: String, typed: Typed?, marker: PyCallExpression, default: PyExpression?, file: PyFile) {
         var schema = typed?.schema ?: return fail(Gap.UNRESOLVED_TYPE, "type of form parameter $name")
-        schema = Constraints.applyCall(schema, marker)
+        schema = Constraints.applyCall(schema, marker, mapper.constants) ?: return fail(Gap.UNRESOLVED_TYPE, "constraints of form parameter $name")
         val ref = schema.ref?.substringAfterLast('/')
         if (ref != null) {
             // A model declared as `Annotated[Model, Form()]` contributes its fields.

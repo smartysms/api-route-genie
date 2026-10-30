@@ -34,6 +34,7 @@ object SchemaWriter {
                 is Additional.OfSchema -> toJson(it.schema)
             }
         }
+        schema.propertyNames?.let { out["propertyNames"] = toJson(it) }
         schema.items?.let { out["items"] = toJson(it) }
         if (schema.prefixItems.isNotEmpty()) out["prefixItems"] = Json.Arr(schema.prefixItems.map { toJson(it) })
         number(out, "minimum", schema.minimum)

@@ -214,7 +214,16 @@ internal class PydanticModels(private val mapper: TypeMapper) {
         }
 
         var schema = typed?.schema ?: Schema.EMPTY.also { session.skipped(where, Gap.UNRESOLVED_TYPE) }
-        defaultCall?.let { schema = Constraints.applyCall(schema, it) }
+        defaultCall?.let { call ->
+            val constrained = Constraints.applyCall(schema, call, mapper.constants)
+            if (constrained == null) {
+                // A limit written as an expression cannot be read, and a limit that is dropped would let a sample break it.
+                session.skipped(where, Gap.UNRESOLVED_TYPE)
+                schema = Schema.EMPTY
+            } else {
+                schema = constrained
+            }
+        }
         (defaultCall ?: calls.lastOrNull())?.let { schema = discriminated(schema, it) }
 
         val defaultExpression = default

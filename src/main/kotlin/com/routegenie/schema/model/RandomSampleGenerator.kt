@@ -128,12 +128,14 @@ object RandomSampleGenerator {
             }
             val extra = (s.additional as? Additional.OfSchema)?.schema
             if (s.properties.isEmpty() && extra != null) {
-                val low = maxOf(s.minProperties ?: 1, 1)
-                val high = minOf(s.maxProperties ?: Int.MAX_VALUE, Limits.RANDOM_MAP_MAX_ENTRIES)
+                // A map has a few entries; a minimum above that is met, and a maximum of 0 gives the empty map.
+                val most = s.maxProperties
+                val low = if (most != null && most < 1) 0 else maxOf(s.minProperties ?: 1, 1)
+                val high = minOf(most ?: Int.MAX_VALUE, maxOf(low, Limits.RANDOM_MAP_MAX_ENTRIES))
                 if (low > high) return gap(path, GapReason.UNSATISFIABLE)
                 val count = if (high > low) random.nextInt(low, high + 1) else low
                 repeat(count) {
-                    val key = freshKey(members.keys)
+                    val key = freshKey(s.propertyNames, members.keys, depth, path) ?: return@repeat
                     node(extra, depth + 1, "$path.*")?.let { members[key] = it }
                 }
             }
@@ -158,22 +160,31 @@ object RandomSampleGenerator {
             return Json.Obj(members)
         }
 
-        private fun freshKey(taken: Set<String>): String {
+        /**
+         * A name for one more entry of a map: any word, or a value of [names] (the key type of a `dict[int, X]`) written as text.
+         * Null when the key type has no value or no unused one is found; the map then gets fewer entries.
+         */
+        private fun freshKey(names: Schema?, taken: Set<String>, depth: Int, path: String): String? {
+            if (names == null) {
+                repeat(Limits.SAMPLE_UNIQUE_ATTEMPTS) {
+                    val key = word(3, 8)
+                    if (key !in taken) return key
+                }
+                return word(9, 12) + taken.size
+            }
             repeat(Limits.SAMPLE_UNIQUE_ATTEMPTS) {
-                val key = word(3, 8)
+                val key = SampleValues.keyText(node(names, depth + 1, "$path.<name>") ?: return null) ?: return null
                 if (key !in taken) return key
             }
-            return word(9, 12) + taken.size
+            return null
         }
 
         private fun array(s: Schema, depth: Int, path: String): Json? {
-            if (s.prefixItems.isNotEmpty()) {
-                val out = ArrayList<Json>()
-                for ((i, element) in s.prefixItems.withIndex()) out += node(element, depth + 1, "$path[$i]") ?: return null
-                return Json.Arr(out)
-            }
-            val minItems = s.minItems ?: 0
             val maxItems = s.maxItems
+            if (maxItems != null && maxItems < 0) return gap(path, GapReason.UNSATISFIABLE)
+            val minItems = maxOf(s.minItems ?: 0, 0)
+            val seen: MutableSet<Json>? = if (s.uniqueItems) HashSet() else null
+            if (s.prefixItems.isNotEmpty()) return tuple(s, minItems, seen, depth, path)
             val item = s.items ?: return if (minItems > 0) gap(path, GapReason.NO_TYPE) else Json.Arr(emptyList())
             // An array with no minimum still gets an item, so the shape of the element is visible; a maximum of 0 stays empty.
             val low = if (maxItems != null && maxItems < 1) 0 else maxOf(minItems, 1)
@@ -181,22 +192,40 @@ object RandomSampleGenerator {
             if (low > high) return gap(path, GapReason.UNSATISFIABLE)
             val count = if (high > low) random.nextInt(low, high + 1) else low
             val out = ArrayList<Json>()
-            for (i in 0 until count) {
-                val value = element(item, depth, "$path[]", out, s.uniqueItems) ?: break
-                out += value
-            }
+            for (i in 0 until count) out += element(item, depth, "$path[]", seen) ?: break
             // Fewer items than drawn is fine, fewer than demanded is not.
             if (out.size < minItems) return gap(path, GapReason.UNSATISFIABLE)
             return Json.Arr(out)
         }
 
-        /** A value for one more item; when items must be unique, a value that is not in [taken] yet (null if none was found). */
-        private fun element(item: Schema, depth: Int, path: String, taken: List<Json>, unique: Boolean): Json? {
+        /**
+         * A tuple: the declared positions in order, cut to `maxItems`, and lengthened from `items` when `minItems` demands more
+         * than the positions (only possible when the schema says what the extra items are).
+         */
+        private fun tuple(s: Schema, minItems: Int, seen: MutableSet<Json>?, depth: Int, path: String): Json? {
+            val maxItems = s.maxItems
+            var count = s.prefixItems.size
+            if (maxItems != null) count = minOf(count, maxItems)
+            if (count < minItems) {
+                if (s.items == null || (maxItems != null && maxItems < minItems)) return gap(path, GapReason.UNSATISFIABLE)
+                count = minItems
+            }
+            val out = ArrayList<Json>()
+            for (i in 0 until count) {
+                val at = s.prefixItems.getOrNull(i) ?: s.items ?: break
+                out += element(at, depth, "$path[$i]", seen) ?: break
+            }
+            if (out.size < minItems) return gap(path, GapReason.UNSATISFIABLE)
+            return Json.Arr(out)
+        }
+
+        /** A value for one more item; when items must be unique ([seen] is set), one that is not in it yet (null if none was found). */
+        private fun element(item: Schema, depth: Int, path: String, seen: MutableSet<Json>?): Json? {
             val first = node(item, depth + 1, path) ?: return null
-            if (!unique || first !in taken) return first
+            if (seen == null || seen.add(first)) return first
             repeat(Limits.RANDOM_UNIQUE_ATTEMPTS) {
                 val value = node(item, depth + 1, path) ?: return null
-                if (value !in taken) return value
+                if (seen.add(value)) return value
             }
             return null
         }
@@ -206,25 +235,36 @@ object RandomSampleGenerator {
         private fun string(s: Schema, path: String): Json? {
             val format = s.format
             if (format != null && SampleValues.hasNoSample(format)) return gap(path, GapReason.BINARY)
+            // A length below 0 asks for nothing; a maximum below 0 cannot be met.
+            val minLength = s.minLength?.coerceAtLeast(0)
+            val maxLength = s.maxLength
+            if (maxLength != null && maxLength < 0) return gap(path, GapReason.UNSATISFIABLE)
+            if (format == SampleValues.DECIMAL) return decimalText(s, path)
             val pattern = s.pattern
             if (pattern != null) {
-                val text = PatternSampler.sampleRandom(pattern, random, s.minLength, s.maxLength) ?: return gap(path, GapReason.PATTERN)
+                val text = PatternSampler.sampleRandom(pattern, random, minLength, maxLength) ?: return gap(path, GapReason.PATTERN)
                 return Json.Str(text)
             }
-            val minLength = s.minLength
-            val maxLength = s.maxLength
             if (format != null && formatted(format) != null) {
-                repeat(FORMAT_ATTEMPTS) {
+                repeat(Limits.RANDOM_FORMAT_ATTEMPTS) {
                     val text = formatted(format) ?: return@repeat
                     if (fitsLength(text, minLength, maxLength)) return Json.Str(text)
                 }
                 return gap(path, GapReason.UNSATISFIABLE)
             }
+            // A long maximum (a database column of 65535) does not make the text long: it stays near the usual length unless the minimum asks for more.
             val low = minLength ?: minOf(Limits.RANDOM_STRING_MIN_CHARS, maxLength ?: Int.MAX_VALUE)
             if (low > Limits.SAMPLE_MAX_STRING_CHARS) return gap(path, GapReason.LIMIT)
-            val high = minOf(maxLength ?: maxOf(low, Limits.RANDOM_STRING_MAX_CHARS), Limits.SAMPLE_MAX_STRING_CHARS)
+            val usual = low + Limits.RANDOM_STRING_MAX_CHARS - Limits.RANDOM_STRING_MIN_CHARS
+            val high = minOf(maxLength ?: Int.MAX_VALUE, usual, Limits.SAMPLE_MAX_STRING_CHARS)
             if (low > high) return gap(path, GapReason.UNSATISFIABLE)
             return Json.Str(word(low, high))
+        }
+
+        /** A decimal written as text (`"12.50"`): drawn like a number within the bounds the string schema carries, then written plainly. */
+        private fun decimalText(s: Schema, path: String): Json? {
+            val number = number(s, integer = false, path) as? Json.Num ?: return null
+            return Json.Str(JsonText.number(number.value))
         }
 
         private fun fitsLength(text: String, min: Int?, max: Int?): Boolean {
@@ -282,23 +322,29 @@ object RandomSampleGenerator {
          */
         private fun number(s: Schema, integer: Boolean, path: String): Json? {
             val multiple = s.multipleOf?.takeIf { it.signum() > 0 }
-            val units: List<BigDecimal> = when {
-                multiple != null -> listOf(multiple)
-                integer -> listOf(BigDecimal.ONE)
-                else -> (2..Limits.RANDOM_MAX_DECIMALS).map { BigDecimal.ONE.movePointLeft(it) }
-            }
             var lower = s.minimum
             var lowerStrict = false
             s.exclusiveMinimum?.let { if (lower == null || it >= lower!!) { lower = it; lowerStrict = true } }
             var upper = s.maximum
             var upperStrict = false
             s.exclusiveMaximum?.let { if (upper == null || it <= upper!!) { upper = it; upperStrict = true } }
+            val units: List<BigDecimal> = when {
+                multiple != null -> listOf(multiple)
+                integer -> listOf(BigDecimal.ONE)
+                else -> (2..finestDecimals(lower, upper)).map { BigDecimal.ONE.movePointLeft(it) }
+            }
             for (unit in units) {
                 val multiplier = multiplier(lower, lowerStrict, upper, upperStrict, unit, wholeOnly = integer && multiple != null) ?: continue
                 val value = normalize(BigDecimal(multiplier).multiply(unit))
                 return Json.Num(value)
             }
             return gap(path, GapReason.UNSATISFIABLE)
+        }
+
+        /** Decimals tried at most for a fractional number: the usual few, or one more than the finest bound has when the bounds are finer. */
+        private fun finestDecimals(lower: BigDecimal?, upper: BigDecimal?): Int {
+            val bounds = maxOf(lower?.stripTrailingZeros()?.scale() ?: 0, upper?.stripTrailingZeros()?.scale() ?: 0) + 1
+            return bounds.coerceIn(Limits.RANDOM_MAX_DECIMALS, Limits.RANDOM_MAX_DECIMALS_CAP)
         }
 
         /** A whole number k with k*unit inside the bounds, or null when there is none. [wholeOnly] also demands k*unit to be whole. */
@@ -339,7 +385,6 @@ object RandomSampleGenerator {
         }
     }
 
-    private const val FORMAT_ATTEMPTS = 8
     private const val IPV6_GROUPS = 8
     private const val VOWELS = "aeiou"
     private const val CONSONANTS = "bcdfghjklmnprstvz"

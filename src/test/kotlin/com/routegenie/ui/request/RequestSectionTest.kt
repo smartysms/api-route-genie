@@ -228,6 +228,76 @@ class RequestSectionTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(owner) }
     }
 
+    /** A source that counts: the fixed sample is always the same, the random one is different every time. */
+    private class CountingSource : BodyTemplateSource {
+        var randoms = 0
+        override suspend fun templateFor(endpoint: com.routegenie.model.Endpoint) = BodyTemplate("application/json", "{\"sample\": true}")
+        override suspend fun randomTemplateFor(endpoint: com.routegenie.model.Endpoint) = BodyTemplate("application/json", "{\"random\": ${++randoms}}")
+    }
+
+    private fun sectionWith(owner: com.intellij.openapi.Disposable, source: BodyTemplateSource) = RequestSection(
+        project, owner, engine = { engine }, bodyTemplates = { source }, ui = ui,
+        state = state, secretStore = store, secretExecutor = directExecutor, responses = com.routegenie.client.ResponseSlot(),
+    )
+
+    fun testRandomBodyButtonGivesAnotherSetEachTimeAndAsksBeforeReplacingTheUsersText() {
+        val owner = owner()
+        val settings = com.routegenie.settings.RouteGenieSettings.getInstance()
+        val before = settings.bodyFillMode
+        try {
+            settings.bodyFillMode = com.routegenie.settings.BodyFillMode.OFF
+            val s = sectionWith(owner, CountingSource())
+            s.show(endpoint(HttpMethod.POST, "/items", emptyList()))
+            val form = s.formForTest()
+            assertTrue("offered at body type None", form.randomButtonForTest().isVisible)
+            form.randomButtonForTest().doClick()
+            waitFor { form.bodyTextForTest() == "{\"random\": 1}" }
+            assertEquals(BodyType.JSON, s.currentForm()!!.bodyKind)
+            // Pressing again replaces what the button wrote, without a question.
+            form.randomButtonForTest().doClick()
+            waitFor { form.bodyTextForTest() == "{\"random\": 2}" }
+            assertFalse(form.replaceBarVisible())
+            // Text the user wrote is protected.
+            s.currentForm()!!.bodyText = "{\"mine\": true}"
+            form.refresh(null)
+            form.randomButtonForTest().doClick()
+            waitFor { form.replaceBarVisible() }
+            assertEquals("{\"mine\": true}", form.bodyTextForTest())
+            assertEquals("nothing is sent by any of this", 0, engine.streams)
+        } finally {
+            settings.bodyFillMode = before
+            Disposer.dispose(owner)
+        }
+    }
+
+    fun testTheFillModeDecidesWhatOpeningAnEndpointDoes() {
+        val settings = com.routegenie.settings.RouteGenieSettings.getInstance()
+        val before = settings.bodyFillMode
+        try {
+            for ((mode, expected) in listOf(
+                com.routegenie.settings.BodyFillMode.SAMPLE to "{\"sample\": true}",
+                com.routegenie.settings.BodyFillMode.RANDOM to "{\"random\": 1}",
+                com.routegenie.settings.BodyFillMode.OFF to "",
+            )) {
+                val owner = owner()
+                try {
+                    settings.bodyFillMode = mode
+                    val s = sectionWith(owner, CountingSource())
+                    s.show(endpoint(HttpMethod.POST, "/items-$mode", emptyList()))
+                    if (expected.isEmpty()) {
+                        Thread.sleep(150)
+                        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+                    } else {
+                        waitFor { s.formForTest().bodyTextForTest().isNotEmpty() }
+                    }
+                    assertEquals("mode $mode", expected, s.formForTest().bodyTextForTest())
+                } finally { Disposer.dispose(owner) }
+            }
+        } finally {
+            settings.bodyFillMode = before
+        }
+    }
+
     fun testFocusOnResponseHidesTheFormAndTheListAndRestoresThemAsTheyWere() {
         val owner = owner()
         try {

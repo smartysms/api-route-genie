@@ -46,6 +46,13 @@ internal class FieldOpts {
     var maxLength: Int? = null
     var minValue: BigDecimal? = null
     var maxValue: BigDecimal? = null
+
+    /** `max_digits` and `decimal_places` of a decimal field. */
+    var maxDigits: Int? = null
+    var decimalPlaces: Int? = null
+
+    /** `protocol` of an IP address field: `both`, `IPv4` or `IPv6`. */
+    var protocol: String? = null
     var choices: List<Json>? = null
     var pattern: String? = null
     var many = false
@@ -81,18 +88,50 @@ internal class OptionReader(private val mapper: TypeMapper) {
         o.maxValue = PyLiterals.number(kw("max_value"))
         o.description = PyLiterals.string(kw("help_text"))
         o.allowEmpty = PyLiterals.bool(kw("allow_empty"))
-        for ((name, present) in listOf("min_length" to kw("min_length"), "max_length" to kw("max_length"), "min_value" to kw("min_value"), "max_value" to kw("max_value"))) {
+        o.maxDigits = PyLiterals.int(kw("max_digits"))
+        o.decimalPlaces = PyLiterals.int(kw("decimal_places"))
+        o.protocol = PyLiterals.string(kw("protocol"))
+        for ((name, present) in listOf("min_length" to kw("min_length"), "max_length" to kw("max_length"), "min_value" to kw("min_value"), "max_value" to kw("max_value"), "max_digits" to kw("max_digits"), "decimal_places" to kw("decimal_places"))) {
             if (present != null && !isLiteralNumber(present)) o.unresolved = "$name is not a literal"
         }
+        if (kw("protocol") != null && o.protocol == null) o.unresolved = "protocol is not a literal"
+        // Dates written in another layout than the default ones (`input_formats=["%d/%m/%Y"]`) cannot be sampled from a format string.
+        kw("input_formats")?.let { if (PyLiterals.strings(it) != listOf(ISO_8601)) o.unresolved = "input_formats is not the default" }
         kw("choices")?.let { expression ->
             val values = choices(expression, file, 0)
             if (values == null) o.unresolved = "choices cannot be read" else o.choices = values
         }
         o.pattern = PyLiterals.string(kw("regex") ?: PyLiterals.positional(call).firstOrNull())
+        validators(kw("validators"), file, o)
         return o
     }
 
     private fun isLiteralNumber(e: PyExpression) = PyLiterals.number(e) != null
+
+    /**
+     * `validators=[MinValueValidator(1), MaxLengthValidator(10), RegexValidator(...)]`: the ones with literal limits become
+     * bounds; any other validator is code that cannot be evaluated here.
+     */
+    fun validators(expression: PyExpression?, file: PyFile, o: FieldOpts) {
+        val items = PyLiterals.elements(expression) ?: return
+        for (item in items) {
+            val call = PyLiterals.unparen(item) as? PyCallExpression ?: continue
+            val key = DjangoSchemaCatalog.validators[symbols.libName(call.callee, file)] ?: continue
+            val argument = PyLiterals.positional(call).firstOrNull()
+            when (key) {
+                "min_value" -> PyLiterals.number(argument)?.let { o.minValue = it }
+                "max_value" -> PyLiterals.number(argument)?.let { o.maxValue = it }
+                "min_length" -> PyLiterals.int(argument)?.let { o.minLength = it }
+                "max_length" -> PyLiterals.int(argument)?.let { o.maxLength = it }
+                "pattern" -> {
+                    // `inverse_match` and `flags` change what the expression means.
+                    val options = call.arguments.filterIsInstance<com.jetbrains.python.psi.PyKeywordArgument>().mapNotNull { it.keyword }
+                    val text = PyLiterals.string(argument ?: PyLiterals.keyword(call, "regex"))
+                    if (text == null || options.any { it != "regex" && it != "message" && it != "code" }) o.unresolved = "RegexValidator options" else if (o.pattern == null) o.pattern = text
+                }
+            }
+        }
+    }
 
     /** Keys of a choices declaration: a list of values, of `(value, label)` pairs, grouped pairs, or a dict. */
     fun choices(expression: PyExpression?, file: PyFile, depth: Int): List<Json>? {
@@ -165,6 +204,7 @@ internal class OptionReader(private val mapper: TypeMapper) {
 
     private companion object {
         const val CHOICES_PROPERTY = "choices"
+        const val ISO_8601 = "iso-8601"
     }
 }
 
@@ -174,16 +214,21 @@ internal object FieldSchemas {
 
     fun scalar(kind: FieldKind, o: FieldOpts): Schema? {
         val base: Schema = when (kind) {
-            FieldKind.CHAR -> Schema.STRING.copy(minLength = if (o.allowBlank) o.minLength else maxOf(1, o.minLength ?: 1), maxLength = o.maxLength)
+            FieldKind.CHAR -> Schema.STRING.copy(minLength = if (o.allowBlank) o.minLength else maxOf(1, o.minLength ?: 1), maxLength = o.maxLength, pattern = o.pattern)
             FieldKind.EMAIL -> Schema.of(JsonType.STRING, "email").copy(minLength = if (o.allowBlank) o.minLength else maxOf(1, o.minLength ?: 1), maxLength = o.maxLength)
             FieldKind.URL -> Schema.of(JsonType.STRING, "uri").copy(minLength = if (o.allowBlank) o.minLength else maxOf(1, o.minLength ?: 1), maxLength = o.maxLength)
             FieldKind.SLUG -> Schema.STRING.copy(pattern = SLUG_PATTERN, minLength = if (o.allowBlank) o.minLength else maxOf(1, o.minLength ?: 1), maxLength = o.maxLength)
             FieldKind.UUID -> Schema.of(JsonType.STRING, "uuid")
-            FieldKind.IP -> Schema(anyOf = listOf(Schema.of(JsonType.STRING, "ipv4"), Schema.of(JsonType.STRING, "ipv6")))
+            FieldKind.IP -> when (o.protocol?.lowercase()) {
+                "ipv4" -> Schema.of(JsonType.STRING, "ipv4")
+                "ipv6" -> Schema.of(JsonType.STRING, "ipv6")
+                else -> Schema(anyOf = listOf(Schema.of(JsonType.STRING, "ipv4"), Schema.of(JsonType.STRING, "ipv6")))
+            }
             FieldKind.REGEX -> Schema.STRING.copy(pattern = o.pattern ?: return null, minLength = o.minLength, maxLength = o.maxLength)
             FieldKind.INTEGER -> Schema.INTEGER.copy(minimum = o.minValue, maximum = o.maxValue)
             FieldKind.POSITIVE_INTEGER -> Schema.INTEGER.copy(minimum = o.minValue?.max(BigDecimal.ZERO) ?: BigDecimal.ZERO, maximum = o.maxValue)
-            FieldKind.FLOAT, FieldKind.DECIMAL -> Schema.NUMBER.copy(minimum = o.minValue, maximum = o.maxValue)
+            FieldKind.FLOAT -> Schema.NUMBER.copy(minimum = o.minValue, maximum = o.maxValue)
+            FieldKind.DECIMAL -> Constraints.digits(Schema.NUMBER.copy(minimum = o.minValue, maximum = o.maxValue), o.maxDigits, o.decimalPlaces)
             FieldKind.BOOLEAN -> Schema.BOOLEAN
             FieldKind.NULL_BOOLEAN -> Schema.nullable(Schema.BOOLEAN)
             FieldKind.DATETIME -> Schema.of(JsonType.STRING, "date-time")

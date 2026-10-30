@@ -8,6 +8,7 @@ import com.jetbrains.python.psi.PyFunction
 import com.jetbrains.python.psi.PyTargetExpression
 import com.routegenie.model.HttpMethod
 import com.routegenie.schema.model.BodyEncoding
+import com.routegenie.schema.model.Json
 import com.routegenie.schema.model.JsonType
 import com.routegenie.schema.model.Schema
 
@@ -237,6 +238,8 @@ internal class DjangoForms(private val mapper: TypeMapper) {
         if (kind == FieldKind.CHAR || kind == FieldKind.EMAIL || kind == FieldKind.URL || kind == FieldKind.SLUG) {
             if (opts.required == false || opts.allowBlank) schema = schema.copy(minLength = null)
         }
+        // A required checkbox must be ticked: Django refuses `false` for a required BooleanField ("you must accept the terms").
+        if (kind == FieldKind.BOOLEAN && opts.required != false) schema = Schema(types = listOf(JsonType.BOOLEAN), constValue = Json.Bool(true))
         opts.description?.let { schema = schema.copy(description = it) }
         return schema
     }

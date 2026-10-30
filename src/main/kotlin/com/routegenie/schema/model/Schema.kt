@@ -63,6 +63,8 @@ data class Schema(
     val uniqueItems: Boolean = false,
     val minProperties: Int? = null,
     val maxProperties: Int? = null,
+    /** JSON Schema `propertyNames`: what every key of the object must satisfy (a Python `dict[int, X]` has number-like keys). */
+    val propertyNames: Schema? = null,
     /** OpenAPI 3.0 style flag; the writer turns it into a `null` member of `type`. */
     val nullable: Boolean = false,
     val readOnly: Boolean = false,

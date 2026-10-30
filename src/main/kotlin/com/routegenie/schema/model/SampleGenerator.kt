@@ -110,7 +110,10 @@ object SampleGenerator {
             }
             val extra = (s.additional as? Additional.OfSchema)?.schema
             if (s.properties.isEmpty() && extra != null) {
-                node(extra, depth + 1, "$path.*", 0)?.let { members[SampleValues.MAP_KEY] = it }
+                // The key is a stand-in word unless the key type says more (a `dict[int, X]` needs a number as its key).
+                val names = s.propertyNames
+                val key = if (names == null) SampleValues.MAP_KEY else node(names, depth + 1, "$path.<name>", 0)?.let { SampleValues.keyText(it) }
+                if (key != null) node(extra, depth + 1, "$path.*", 0)?.let { members[key] = it }
             }
             return Json.Obj(members)
         }

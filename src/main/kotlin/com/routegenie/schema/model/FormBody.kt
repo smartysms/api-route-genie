@@ -14,7 +14,8 @@ object FormBody {
         for ((name, member) in fields) {
             when (member) {
                 Json.Null -> Unit
-                is Json.Arr -> for (item in member.items) pairs += pair(name, item) ?: return null
+                // A null item is left out like a null member: a form cannot say null, and dropping the whole body for it would be flaky.
+                is Json.Arr -> for (item in member.items) if (item != Json.Null) pairs += pair(name, item) ?: return null
                 else -> pairs += pair(name, member) ?: return null
             }
         }

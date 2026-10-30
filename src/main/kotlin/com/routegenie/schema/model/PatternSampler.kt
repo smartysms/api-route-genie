@@ -16,6 +16,8 @@ object PatternSampler {
      */
     fun sample(pattern: String, minLength: Int? = null, maxLength: Int? = null): String? {
         if (pattern.length > Limits.SAMPLE_PATTERN_MAX_CHARS) return null
+        // A text longer than the sampler builds can never be reached; trying every length up to it only costs time.
+        if ((minLength ?: 0) > Limits.SAMPLE_PATTERN_MAX_OUTPUT_CHARS) return null
         // The JVM dialect differs from Python's in named groups only for what this subset allows.
         val regex = runCatching { Regex(pattern.replace("(?P<", "(?<")) }.getOrNull() ?: return null
         val steps = minOf(maxOf(minLength ?: 0, 0), Limits.SAMPLE_PATTERN_MAX_OUTPUT_CHARS)
@@ -36,6 +38,7 @@ object PatternSampler {
      */
     fun sampleRandom(pattern: String, random: Random, minLength: Int? = null, maxLength: Int? = null): String? {
         if (pattern.length > Limits.SAMPLE_PATTERN_MAX_CHARS) return null
+        if ((minLength ?: 0) > Limits.SAMPLE_PATTERN_MAX_OUTPUT_CHARS) return null
         val regex = runCatching { Regex(pattern.replace("(?P<", "(?<")) }.getOrNull() ?: return null
         repeat(Limits.RANDOM_PATTERN_ATTEMPTS) {
             val text = runCatching { Parser(pattern, 0, random).parse() }.getOrNull() ?: return@repeat
@@ -52,6 +55,7 @@ object PatternSampler {
     private class Parser(private val src: String, private val extra: Int, private val random: Random? = null) {
         private var pos = 0
         private var budget = Limits.SAMPLE_PATTERN_MAX_OUTPUT_CHARS
+        private var steps = 0L
 
         fun parse(): String {
             val out = alternation()
@@ -74,9 +78,14 @@ object PatternSampler {
             val out = StringBuilder()
             while (pos < src.length && src[pos] != '|' && src[pos] != ')') {
                 val start = pos
+                val before = steps
                 val atom = atom()
                 val afterAtom = pos
                 val (min, max) = quantifier()
+                // A repeated group is read once more for each copy, so what it cost counts once per copy: nested repeats multiply,
+                // which is also what the JVM regex engine does when it checks the answer (1000 x 1000 x 1000 x 1000 empty groups never ends).
+                steps += (steps - before) * (maxOf(min, 1) - 1)
+                if (steps > Limits.SAMPLE_PATTERN_MAX_STEPS) throw Unsupported()
                 if (random == null) {
                     repeat(minOf(max.toLong(), min.toLong() + extra).toInt()) { out.append(atom) }
                 } else {
@@ -101,6 +110,8 @@ object PatternSampler {
         }
 
         private fun atom(): String {
+            // Every repeat of a group reads it again, so nested repeats multiply; the count of atoms read bounds the work.
+            if (++steps > Limits.SAMPLE_PATTERN_MAX_STEPS) throw Unsupported()
             val c = src[pos++]
             return when (c) {
                 '^', '$' -> ""
@@ -167,10 +178,12 @@ object PatternSampler {
         /** A random character of the class (or, for a negated class, of the printable ASCII characters outside it). */
         private fun randomMember(members: List<CharRange>, negated: Boolean): String {
             val rnd = random!!
+            // A space is drawn only when nothing else fits: servers trim the ends of text fields, which would change the value.
             if (negated) {
                 val allowed = PRINTABLE.filter { c -> members.none { c in it } }
-                if (allowed.isEmpty()) throw Unsupported()
-                return allowed[rnd.nextInt(allowed.size)].toString()
+                val fallback = if (allowed.isEmpty()) listOf(' ').filter { c -> members.none { c in it } } else allowed
+                if (fallback.isEmpty()) throw Unsupported()
+                return fallback[rnd.nextInt(fallback.size)].toString()
             }
             // Printable characters of the class read better and are always valid; a class without any (control characters only) keeps its first.
             val printable = members.flatMap { range -> range.filter { it in PRINTABLE_RANGE } }
@@ -239,6 +252,6 @@ object PatternSampler {
 
     private val NEGATED_CANDIDATES = listOf('a', 'A', '0', 'x', '_', '-')
     private const val LETTERS = "abcdefghijklmnopqrstuvwxyz"
-    private val PRINTABLE_RANGE = ' '..'~'
+    private val PRINTABLE_RANGE = '!'..'~'
     private val PRINTABLE: List<Char> = PRINTABLE_RANGE.toList()
 }

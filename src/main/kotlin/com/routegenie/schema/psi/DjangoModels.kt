@@ -64,7 +64,7 @@ internal object DjangoSchemaCatalog {
     val defaultMaxLength: Map<ModelKind, Int> = mapOf(ModelKind.EMAIL to 254, ModelKind.URL to 200, ModelKind.SLUG to 50)
 
     val validators: Map<String, String> = buildMap {
-        for ((simple, key) in listOf("MinValueValidator" to "min_value", "MaxValueValidator" to "max_value", "MinLengthValidator" to "min_length", "MaxLengthValidator" to "max_length")) {
+        for ((simple, key) in listOf("MinValueValidator" to "min_value", "MaxValueValidator" to "max_value", "MinLengthValidator" to "min_length", "MaxLengthValidator" to "max_length", "RegexValidator" to "pattern")) {
             this["django.core.validators.$simple"] = key
         }
     }
@@ -240,26 +240,16 @@ internal class DjangoModels(private val mapper: TypeMapper, private val options:
             o.hasDefault = true
         }
         o.maxLength = PyLiterals.int(field.keyword("max_length")) ?: DjangoSchemaCatalog.defaultMaxLength[field.kind]
+        o.maxDigits = PyLiterals.int(field.keyword("max_digits"))
+        o.decimalPlaces = PyLiterals.int(field.keyword("decimal_places"))
+        o.protocol = PyLiterals.string(field.keyword("protocol"))
+        if ((field.keyword("protocol") != null && o.protocol == null) || (field.keyword("max_digits") != null && o.maxDigits == null) || (field.keyword("decimal_places") != null && o.decimalPlaces == null)) {
+            o.unresolved = "decimal or protocol option is not a literal"
+        }
         if (field.kind == ModelKind.TEXT) o.maxLength = null
         PyLiterals.string(field.keyword("help_text"))?.let { o.description = it }
-        readValidators(field, o)
+        options.validators(field.keyword("validators"), field.file, o)
         return o
-    }
-
-    /** `validators=[MinValueValidator(1), MaxLengthValidator(10)]`: the ones with literal limits become bounds. */
-    private fun readValidators(field: ModelField, o: FieldOpts) {
-        val items = PyLiterals.elements(field.keyword("validators")) ?: return
-        for (item in items) {
-            val call = PyLiterals.unparen(item) as? PyCallExpression ?: continue
-            val key = DjangoSchemaCatalog.validators[symbols.libName(call.callee, field.file)] ?: continue
-            val argument = PyLiterals.positional(call).firstOrNull()
-            when (key) {
-                "min_value" -> PyLiterals.number(argument)?.let { o.minValue = it }
-                "max_value" -> PyLiterals.number(argument)?.let { o.maxValue = it }
-                "min_length" -> PyLiterals.int(argument)?.let { o.minLength = it }
-                "max_length" -> PyLiterals.int(argument)?.let { o.maxLength = it }
-            }
-        }
     }
 
     // --- Relations -------------------------------------------------------------------------------------------------------

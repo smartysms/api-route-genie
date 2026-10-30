@@ -47,6 +47,17 @@ internal class TypeMapper(val session: Session) {
     val typedDictDefs = HashSet<String>()
 
     private val symbols = session.symbols
+
+    /** Reads a constant such as `MAX_AGE = 120` where a constraint names it (`Field(le=MAX_AGE)`). */
+    val constants: ConstantResolver = { e -> constant(e, 0) }
+
+    private fun constant(e: PyExpression, depth: Int): PyExpression {
+        val reference = PyLiterals.unparen(e) as? PyReferenceExpression ?: return e
+        if (depth > Limits.MAX_VALUE_RESOLVE_DEPTH) return e
+        val value = (symbols.resolve(reference, reference.containingFile as? PyFile) as? Sym.Value)?.expr ?: return e
+        return constant(value, depth + 1)
+    }
+
     private val defNames = IdentityHashMap<PyClass, String>()
     private val enumMembers = IdentityHashMap<PyClass, Map<String, Json>?>()
     private val kinds = IdentityHashMap<PyClass, ClassKind>()
@@ -232,9 +243,22 @@ internal class TypeMapper(val session: Session) {
             in PydanticCatalog.lists -> map(args.singleOrNull(), file, depth + 1)?.let { Typed(Schema.arrayOf(it.schema)) }
             in PydanticCatalog.sets -> map(args.singleOrNull(), file, depth + 1)?.let { Typed(Schema.arrayOf(it.schema).copy(uniqueItems = true)) }
             in PydanticCatalog.tuples -> tuple(args, file, depth)
-            in PydanticCatalog.maps -> map(args.getOrNull(1), file, depth + 1)?.let { Typed(Schema(types = listOf(JsonType.OBJECT), additional = Additional.OfSchema(it.schema))) }
+            in PydanticCatalog.maps -> map(args.getOrNull(1), file, depth + 1)?.let { mapping(args.getOrNull(0), it, file, depth) }
             else -> null
         }
+    }
+
+    /**
+     * `dict[K, V]`: an object whose members are V. A key type other than plain `str` is kept as `propertyNames` (the keys of a
+     * `dict[int, V]` are numbers written as text); a key type that cannot be read leaves the members out, because any name
+     * made up for it could be refused.
+     */
+    private fun mapping(keyType: PyExpression?, value: Typed, file: PyFile, depth: Int): Typed {
+        val base = Schema(types = listOf(JsonType.OBJECT))
+        if (keyType == null) return Typed(base.copy(additional = Additional.OfSchema(value.schema)))
+        val key = map(keyType, file, depth + 1)?.schema ?: return Typed(base)
+        val names = key.takeUnless { it == Schema.STRING || it.isUnconstrained }
+        return Typed(base.copy(additional = Additional.OfSchema(value.schema), propertyNames = names))
     }
 
     private fun union(operands: List<PyExpression>, file: PyFile, depth: Int): Typed? {
@@ -266,11 +290,11 @@ internal class TypeMapper(val session: Session) {
                 callee in PydanticCatalog.annotatedTypes && call != null -> {
                     val key = PydanticCatalog.annotatedTypes.getValue(callee)
                     val value = PyLiterals.positional(call).firstOrNull()
-                    inner = inner.withSchema(Constraints.apply(inner.schema) { k -> if (k == key) value else null })
+                    inner = inner.withSchema(Constraints.apply(inner.schema, constants) { k -> if (k == key) value else null } ?: return null)
                 }
-                callee in PydanticCatalog.stringConstraints && call != null -> inner = inner.withSchema(Constraints.applyCall(inner.schema, call))
+                callee in PydanticCatalog.stringConstraints && call != null -> inner = inner.withSchema(Constraints.applyCall(inner.schema, call, constants) ?: return null)
                 callee in PydanticCatalog.fieldFunctions && call != null -> {
-                    inner = inner.withSchema(Constraints.applyCall(inner.schema, call))
+                    inner = inner.withSchema(Constraints.applyCall(inner.schema, call, constants) ?: return null)
                     kept += call
                 }
                 call != null -> kept += call
@@ -306,7 +330,7 @@ internal class TypeMapper(val session: Session) {
             val item = PyLiterals.keyword(call, "item_type") ?: PyLiterals.positional(call).firstOrNull()
             schema = schema.copy(items = map(item, file, depth + 1)?.schema ?: return null)
         }
-        return Typed(Constraints.applyCall(schema, call))
+        return Typed(Constraints.applyCall(schema, call, constants) ?: return null)
     }
 
     private fun forward(literal: PyStringLiteralExpression, file: PyFile, depth: Int): Typed? {

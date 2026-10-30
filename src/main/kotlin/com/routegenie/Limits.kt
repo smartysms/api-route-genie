@@ -417,6 +417,9 @@ object Limits {
     /** Largest repeat count `{n}` the pattern sampler accepts. */
     const val SAMPLE_PATTERN_MAX_REPEAT = 1_000
 
+    /** Atoms one pattern parse may read; nested repeats of empty groups (`((a{0}){1000}){1000}`) would otherwise run for hours. */
+    const val SAMPLE_PATTERN_MAX_STEPS = 20_000
+
     /** Longest body template (characters) offered to the editor; a bigger sample is not generated. */
     const val BODY_TEMPLATE_MAX_CHARS = 1_000_000
 
@@ -456,6 +459,12 @@ object Limits {
 
     /** Random body: decimals tried, in turn, for a fractional number without `multipleOf`; and tries to draw a string that fits a pattern. */
     const val RANDOM_MAX_DECIMALS = 6
+
+    /** Random body: finest decimals tried when the bounds of a number are themselves finer than [RANDOM_MAX_DECIMALS]. */
+    const val RANDOM_MAX_DECIMALS_CAP = 30
+
+    /** Random body: tries to draw a value of a known string format that fits a length limit (a URL under 30 characters needs several). */
+    const val RANDOM_FORMAT_ATTEMPTS = 32
     const val RANDOM_PATTERN_ATTEMPTS = 24
 
     /** Random body: draws tried to find an item that is not in a `uniqueItems` array yet (a small enum needs many). */

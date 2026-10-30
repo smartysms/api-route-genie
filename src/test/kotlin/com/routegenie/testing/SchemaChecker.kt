@@ -98,6 +98,7 @@ object SchemaChecker {
         "ipv4" -> Regex("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$").matchEntire(text)?.groupValues?.drop(1)?.all { it.toInt() in 0..255 } == true
         "ipv6" -> runCatching { java.net.InetAddress.getByName(text) is java.net.Inet6Address }.getOrDefault(false) && text.contains(':')
         "byte" -> runCatching { java.util.Base64.getDecoder().decode(text) }.isSuccess
+        "decimal" -> text.toBigDecimalOrNull() != null
         else -> true
     }
 
@@ -118,6 +119,18 @@ object SchemaChecker {
         for (name in s.required) if (name !in v.fields) out += "$path: required '$name' is missing"
         s.minProperties?.let { if (v.fields.size < it) out += "$path: ${v.fields.size} members < minProperties $it" }
         s.maxProperties?.let { if (v.fields.size > it) out += "$path: ${v.fields.size} members > maxProperties $it" }
+        s.propertyNames?.let { names ->
+            // A member name is text; a key type such as `int` or `bool` accepts the number or boolean that the text spells.
+            for (name in v.fields.keys) {
+                val spelled = listOfNotNull(
+                    Json.Str(name),
+                    name.toBigDecimalOrNull()?.let { Json.Num(it) },
+                    if (name == "true" || name == "false") Json.Bool(name == "true") else null,
+                )
+                val fits = spelled.any { candidate -> ArrayList<String>().also { check(root, names, candidate, "$path.<name>", it, depth + 1) }.isEmpty() }
+                if (!fits) out += "$path: member name '$name' breaks propertyNames"
+            }
+        }
         for ((name, value) in v.fields) {
             val property = s.properties[name]
             when {

@@ -2,8 +2,25 @@ package com.routegenie.schema.psi
 
 import com.routegenie.schema.model.Json
 import com.routegenie.schema.model.JsonType
+import com.routegenie.schema.model.SampleValues
 import com.routegenie.schema.model.Schema
 import java.math.BigDecimal
+
+/** A `Decimal` is a number or its text (`"12.50"`); the text form carries the same bounds as the number, so a sample of it is a decimal too. */
+private val DECIMAL_SCHEMA: Schema = Schema(anyOf = listOf(Schema.NUMBER, Schema.of(JsonType.STRING, SampleValues.DECIMAL)))
+
+/** A UUID of one version: pydantic's `UUID1`, `UUID3`, `UUID4` and `UUID5` reject the others. */
+private fun uuidOfVersion(version: Int): Schema =
+    Schema.of(JsonType.STRING, "uuid").copy(pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-$version[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\$")
+
+/** A URL type that accepts only some schemes (`schemes` is a regex alternation such as `redis|rediss`); the host and path are generated names. */
+private fun urlOfScheme(schemes: String, user: Boolean = false, path: String = "/[a-z]{3,8}"): Schema {
+    val login = if (user) "[a-z]{3,8}:[a-z]{3,8}@" else ""
+    return Schema.of(JsonType.STRING, "uri").copy(pattern = "^($schemes)://$login[a-z]{3,8}\\.example\\.com$path\$")
+}
+
+/** Network and interface types: the text must be an address with a prefix, and a network must not have host bits set. */
+private fun textOneOf(pattern: String): Schema = Schema.STRING.copy(pattern = pattern)
 
 /**
  * Every fact about Python typing, Pydantic, dataclasses and enums that body extraction relies on: qualified names of the
@@ -82,17 +99,30 @@ internal object PydanticCatalog {
         put(setOf("datetime.date"), Schema.of(JsonType.STRING, "date"))
         put(setOf("datetime.time"), Schema.of(JsonType.STRING, "time"))
         put(setOf("datetime.timedelta"), Schema.of(JsonType.STRING, "duration"))
-        put(setOf("uuid.UUID") + names(allPydanticRoots, "UUID1", "UUID3", "UUID4", "UUID5"), Schema.of(JsonType.STRING, "uuid"))
-        put(setOf("decimal.Decimal"), Schema(anyOf = listOf(Schema.NUMBER, Schema.STRING)))
+        put(setOf("uuid.UUID"), Schema.of(JsonType.STRING, "uuid"))
+        for (version in listOf(1, 3, 4, 5)) put(names(allPydanticRoots, "UUID$version"), uuidOfVersion(version))
+        put(setOf("decimal.Decimal"), DECIMAL_SCHEMA)
         put(setOf("pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath") + names(allPydanticRoots, "FilePath", "DirectoryPath", "NewPath"), Schema.STRING)
         put(setOf("ipaddress.IPv4Address") + names(allPydanticRoots, "IPvAnyAddress"), Schema.of(JsonType.STRING, "ipv4"))
         put(setOf("ipaddress.IPv6Address"), Schema.of(JsonType.STRING, "ipv6"))
-        put(setOf("ipaddress.IPv4Network", "ipaddress.IPv6Network", "ipaddress.IPv4Interface", "ipaddress.IPv6Interface"), Schema.STRING)
+        put(setOf("ipaddress.IPv4Network"), textOneOf("^(10\\.0\\.0\\.0/8|172\\.16\\.0\\.0/12|192\\.168\\.0\\.0/16|192\\.168\\.1\\.0/24)\$"))
+        put(setOf("ipaddress.IPv6Network"), textOneOf("^(2001:db8::/32|fd00::/8|fe80::/10)\$"))
+        put(setOf("ipaddress.IPv4Interface"), textOneOf("^192\\.168\\.([1-9]?[0-9])\\.[1-9]/24\$"))
+        put(setOf("ipaddress.IPv6Interface"), textOneOf("^2001:db8::[1-9a-f]/64\$"))
         put(names(allPydanticRoots, "EmailStr", "NameEmail"), Schema.of(JsonType.STRING, "email"))
-        put(
-            names(allPydanticRoots, "HttpUrl", "AnyUrl", "AnyHttpUrl", "FileUrl", "FtpUrl", "WebsocketUrl", "AnyWebsocketUrl", "PostgresDsn", "RedisDsn", "MongoDsn", "AmqpDsn", "KafkaDsn", "CockroachDsn", "MySQLDsn", "MariaDBDsn"),
-            Schema.of(JsonType.STRING, "uri"),
-        )
+        put(names(allPydanticRoots, "HttpUrl", "AnyUrl", "AnyHttpUrl"), Schema.of(JsonType.STRING, "uri"))
+        put(names(allPydanticRoots, "FileUrl"), urlOfScheme("file"))
+        put(names(allPydanticRoots, "FtpUrl"), urlOfScheme("ftp"))
+        put(names(allPydanticRoots, "WebsocketUrl", "AnyWebsocketUrl"), urlOfScheme("ws|wss"))
+        // Data source names need a login to be valid in both major versions of pydantic.
+        put(names(allPydanticRoots, "PostgresDsn"), urlOfScheme("postgres|postgresql", user = true))
+        put(names(allPydanticRoots, "RedisDsn"), urlOfScheme("redis|rediss", user = true))
+        put(names(allPydanticRoots, "MongoDsn"), urlOfScheme("mongodb", user = true))
+        put(names(allPydanticRoots, "AmqpDsn"), urlOfScheme("amqp|amqps", user = true))
+        put(names(allPydanticRoots, "KafkaDsn"), urlOfScheme("kafka", user = true))
+        put(names(allPydanticRoots, "CockroachDsn"), urlOfScheme("cockroachdb", user = true))
+        put(names(allPydanticRoots, "MySQLDsn"), urlOfScheme("mysql", user = true))
+        put(names(allPydanticRoots, "MariaDBDsn"), urlOfScheme("mariadb", user = true))
         put(names(allPydanticRoots, "SecretStr", "SecretBytes"), Schema.of(JsonType.STRING, "password").copy(writeOnly = true))
         put(names(allPydanticRoots, "StrictStr"), Schema.STRING)
         put(names(allPydanticRoots, "StrictInt"), Schema.INTEGER)
@@ -115,7 +145,7 @@ internal object PydanticCatalog {
 
     enum class Constrained(val base: Schema) {
         INT(Schema.INTEGER), FLOAT(Schema.NUMBER), STR(Schema.STRING), BYTES(Schema.of(JsonType.STRING, "binary")),
-        DECIMAL(Schema(anyOf = listOf(Schema.NUMBER, Schema.STRING))), LIST(Schema.arrayOf(null)), SET(Schema.arrayOf(null).copy(uniqueItems = true)),
+        DECIMAL(DECIMAL_SCHEMA), LIST(Schema.arrayOf(null)), SET(Schema.arrayOf(null).copy(uniqueItems = true)),
     }
 
     val constrainedFunctions: Map<String, Constrained> = buildMap {
@@ -142,6 +172,8 @@ internal object PydanticCatalog {
         const val EXAMPLE = "example"
         const val DEPRECATED = "deprecated"
         const val DISCRIMINATOR = "discriminator"
+        const val MAX_DIGITS = "max_digits"
+        const val DECIMAL_PLACES = "decimal_places"
         const val GT = "gt"
         const val GE = "ge"
         const val LT = "lt"
