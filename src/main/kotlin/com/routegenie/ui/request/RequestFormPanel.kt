@@ -1,6 +1,8 @@
 package com.routegenie.ui.request
 
+import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.DocumentEvent
@@ -29,7 +31,14 @@ import com.routegenie.client.FieldError
 import com.routegenie.client.FieldLocation
 import com.routegenie.client.SecretKeys
 import com.routegenie.model.Endpoint
+import com.routegenie.files.FileChoice
+import com.routegenie.files.FileMaker
+import com.routegenie.files.GeneratedFileStore
+import com.routegenie.files.ImageFormat
+import com.routegenie.files.MadeFile
 import com.routegenie.model.HttpMethod
+import com.routegenie.schema.model.FileSpec
+import com.routegenie.schema.model.MultipartTemplate
 import com.routegenie.settings.BodyFillMode
 import com.routegenie.settings.RouteGenieSettings
 import com.routegenie.ui.design.BadgeState
@@ -77,8 +86,8 @@ internal class RowsTable(private val withFile: Boolean, private val onChange: ()
         override fun setValueAt(v: Any?, r: Int, c: Int) {
             rows[r] = when (c) {
                 0 -> rows[r].copy(enabled = v as Boolean)
-                1 -> rows[r].copy(name = v as String)
-                2 -> rows[r].copy(value = v as String)
+                1 -> rows[r].copy(name = v as String).let { if (it.generated && !it.file) it.copy(generated = false) else it }
+                2 -> rows[r].copy(value = v as String).let { if (it.generated) it.copy(generated = false, contentType = null, fileName = null) else it }
                 else -> rows[r].copy(file = v as Boolean)
             }
             fireTableCellUpdated(r, c)
@@ -126,6 +135,8 @@ class RequestFormPanel(
     private val onBaseUrl: (String) -> Unit,
     /** What the body is filled with on opening an endpoint; read when an endpoint opens, so a changed setting applies at once. */
     private val fillMode: () -> BodyFillMode = { RouteGenieSettings.getInstance().bodyFillMode },
+    /** Where random upload files are written until they are sent. */
+    private val fileStore: GeneratedFileStore = defaultFileStore(),
 ) : JBPanel<RequestFormPanel>(BorderLayout()), Disposable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var form: RequestForm? = null
@@ -161,6 +172,15 @@ class RequestFormPanel(
     private val replaceBar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(DesignTokens.Space.S), 0)).apply { isVisible = false; isOpaque = false }
     private var pendingTemplate: com.routegenie.client.BodyTemplate? = null
 
+    private val props = PropertiesComponent.getInstance()
+    private val filesFormat = com.intellij.openapi.ui.ComboBox(DefaultComboBoxModel<ImageFormat?>(arrayOf<ImageFormat?>(null, *ImageFormat.entries.toTypedArray())))
+    private val filesWidth = JBTextField(FILE_FIELD_COLUMNS)
+    private val filesHeight = JBTextField(FILE_FIELD_COLUMNS)
+    private val filesMaxKb = JBTextField(FILE_FIELD_COLUMNS)
+    private val filesRegenerate = JButton(msg("req.files.regenerate")).apply { toolTipText = msg("req.files.regenerate.tooltip") }
+    private val filesBar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(DesignTokens.Space.S), JBUI.scale(DesignTokens.Space.XS))).apply { isOpaque = false; isVisible = false }
+    private val partsReplaceBar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(DesignTokens.Space.S), 0)).apply { isVisible = false; isOpaque = false }
+
     /** The text the generate buttons put into the editor last; text equal to it was not written by the user. */
     private var lastGenerated: String? = null
 
@@ -174,6 +194,8 @@ class RequestFormPanel(
 
     init {
         Disposer.register(parent, this)
+        buildFilesBar()
+        sweepOldFiles()
         bodyDocument.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
                 write { it.bodyText = bodyDocument.text }
@@ -248,7 +270,11 @@ class RequestFormPanel(
         }
         bodyCards.add(editorCard, CARD_EDITOR)
         bodyCards.add(formFields.component, BodyType.FORM.name)
-        bodyCards.add(parts.component, BodyType.MULTIPART.name)
+        val partsCard = JPanel(BorderLayout()).apply {
+            add(JPanel(BorderLayout()).apply { isOpaque = false; add(filesBar, BorderLayout.NORTH); add(partsReplaceBar, BorderLayout.SOUTH) }, BorderLayout.NORTH)
+            add(parts.component, BorderLayout.CENTER)
+        }
+        bodyCards.add(partsCard, BodyType.MULTIPART.name)
 
         val auth = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(DesignTokens.Space.S)
@@ -323,6 +349,8 @@ class RequestFormPanel(
             updateAuthWidgets()
             generateNote.isVisible = false
             replaceBar.isVisible = false
+            partsReplaceBar.isVisible = false
+            filesBar.isVisible = f.fileSpecs.isNotEmpty()
             pendingTemplate = null
             showErrors(emptyList())
         } finally {
@@ -344,7 +372,7 @@ class RequestFormPanel(
 
     private fun showBodyCard(kind: BodyType) {
         // The button fills a JSON/text body, so it is offered for those and for None (where it is the way in), not for form types.
-        generate.isVisible = kind == BodyType.NONE || kind == BodyType.JSON || kind == BodyType.TEXT
+        generate.isVisible = kind == BodyType.NONE || kind == BodyType.JSON || kind == BodyType.TEXT || kind == BodyType.MULTIPART || kind == BodyType.MULTIPART
         randomBody.isVisible = generate.isVisible
         if (kind == BodyType.JSON || kind == BodyType.TEXT) setBodyText(kind, form?.bodyText ?: bodyDocument.text)
         (bodyCards.layout as CardLayout).show(bodyCards, if (kind == BodyType.JSON || kind == BodyType.TEXT) CARD_EDITOR else kind.name)
@@ -413,17 +441,198 @@ class RequestFormPanel(
         val current = if (f.bodyText == lastGenerated) "" else f.bodyText
         scope.launch {
             val result = BodyGenerator.generate(bodyTemplates(), f.endpoint, current, random)
+            // A body that is not text (an upload) has no text template; its parts and files are made here, off the UI thread.
+            val parts = if (result is BodyGeneration.Unavailable) multipartFor(f, random) else null
             withContext(Dispatchers.EDT) {
                 generate.isEnabled = true
                 randomBody.isEnabled = true
-                if (form !== f) return@withContext
-                when (result) {
-                    is BodyGeneration.Ready -> applyTemplate(f, result.template)
-                    is BodyGeneration.NeedsConfirmation -> askReplace(f, result.template)
-                    BodyGeneration.Unavailable -> { generateNote.text = msg("req.body.generate.none"); generateNote.isVisible = true }
+                if (form !== f) {
+                    parts?.let { discard(it) }
+                    return@withContext
+                }
+                when {
+                    parts != null -> if (hasOwnParts(f)) askReplaceParts(f, parts) else applyParts(f, parts)
+                    result is BodyGeneration.Ready -> applyTemplate(f, result.template)
+                    result is BodyGeneration.NeedsConfirmation -> askReplace(f, result.template)
+                    else -> { generateNote.text = msg("req.body.generate.none"); generateNote.isVisible = true }
                 }
             }
         }
+    }
+
+    // ---- uploads: parts and random files ---------------------------------------------------------------------------
+
+    /** The rows of an upload body as made from the code, the file limits per part name, and what was made or refused. */
+    private class MadeParts(val rows: List<FormRow>, val specs: Map<String, FileSpec>, val made: List<String>, val refused: List<String>)
+
+    private suspend fun multipartFor(f: RequestForm, random: Boolean): MadeParts? = try {
+        bodyTemplates().multipartTemplateFor(f.endpoint, random)?.let { materialize(it, random) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        LOG.warn("Upload body for ${f.endpoint.key} failed", e)
+        null
+    }
+
+    /** Writes the files of [template] with the current options; the fixed sample uses a fixed seed, so it is the same every time. */
+    private fun materialize(template: MultipartTemplate, random: Boolean): MadeParts {
+        val source = if (random) kotlin.random.Random.Default else kotlin.random.Random(SAMPLE_SEED)
+        val choice = fileChoice()
+        val rows = ArrayList<FormRow>()
+        val specs = LinkedHashMap<String, FileSpec>()
+        val made = ArrayList<String>()
+        val refused = ArrayList<String>()
+        for (part in template.parts) {
+            val spec = part.file
+            if (spec == null) {
+                rows += FormRow(part.name, part.text.orEmpty(), generated = true)
+                continue
+            }
+            specs[part.name] = spec
+            when (val file = FileMaker.make(spec, choice, source)) {
+                is MadeFile.Ok -> {
+                    rows += FormRow(part.name, fileStore.write(file).toString(), true, true, file.file.mime, file.name, true)
+                    made += describe(file)
+                }
+                is MadeFile.Refused -> {
+                    rows += FormRow(part.name, "", true, true)
+                    refused += msg(file.bundleKey, *file.args.toTypedArray())
+                }
+            }
+        }
+        return MadeParts(rows, specs, made, refused)
+    }
+
+    private fun describe(file: MadeFile.Ok): String {
+        val size = file.file.size
+        val text = if (size >= BYTES_PER_KB) "${size / BYTES_PER_KB} KB" else "$size B"
+        val dimensions = file.file.width?.let { w -> ", ${w}x${file.file.height}" }.orEmpty()
+        return "${file.name} ($text$dimensions)"
+    }
+
+    /** True when the table holds rows the user made or edited; rows this plugin generated may be replaced without asking. */
+    private fun hasOwnParts(f: RequestForm) =
+        f.bodyKind == BodyType.MULTIPART && f.parts.any { !it.generated && (it.name.isNotEmpty() || it.value.isNotEmpty()) }
+
+    private fun discard(made: MadeParts) = made.rows.filter { it.generated && it.file }.forEach { deleteFile(it.value) }
+
+    private fun deleteFile(path: String) {
+        runCatching { fileStore.delete(java.nio.file.Path.of(path)) }
+    }
+
+    private fun applyParts(f: RequestForm, made: MadeParts) {
+        f.parts.filter { it.generated && it.file }.forEach { deleteFile(it.value) }
+        f.bodyKind = BodyType.MULTIPART
+        f.parts = made.rows
+        f.fileSpecs = made.specs
+        partsReplaceBar.isVisible = false
+        refresh(baseUrl.text)
+        showFilesNote(made.made, made.refused)
+        onEdited()
+    }
+
+    private fun showFilesNote(made: List<String>, refused: List<String>) {
+        val text = when {
+            refused.isNotEmpty() -> msg("req.files.refused", refused.first())
+            made.isNotEmpty() -> msg("req.files.note", made.joinToString(", "))
+            else -> return
+        }
+        generateNote.text = text
+        generateNote.isVisible = true
+    }
+
+    private fun askReplaceParts(f: RequestForm, made: MadeParts) {
+        partsReplaceBar.removeAll()
+        partsReplaceBar.add(JBLabel(msg("req.body.replace.ask")))
+        partsReplaceBar.add(ActionLink(msg("req.body.replace")) { applyParts(f, made) })
+        partsReplaceBar.add(ActionLink(msg("req.body.replace.cancel")) { discard(made); partsReplaceBar.isVisible = false; revalidate() })
+        partsReplaceBar.isVisible = true
+        revalidate()
+    }
+
+    // ---- the advanced options of the generated files ---------------------------------------------------------------
+
+    private fun buildFilesBar() {
+        filesFormat.renderer = SimpleListCellRenderer.create(msg("req.files.format.auto")) { it?.name.orEmpty() }
+        filesFormat.selectedItem = ImageFormat.entries.firstOrNull { it.name == props.getValue(PROP_FILE_FORMAT) }
+        filesWidth.text = props.getValue(PROP_FILE_WIDTH, "")
+        filesHeight.text = props.getValue(PROP_FILE_HEIGHT, "")
+        filesMaxKb.text = props.getValue(PROP_FILE_MAX_KB, "")
+        filesBar.add(JBLabel(msg("req.files.title")).apply { foreground = Palette.textSecondary })
+        filesBar.add(JBLabel(msg("req.files.format")))
+        filesBar.add(filesFormat)
+        filesBar.add(JBLabel(msg("req.files.size")))
+        filesBar.add(filesWidth)
+        filesBar.add(JBLabel("x"))
+        filesBar.add(filesHeight)
+        filesBar.add(JBLabel(msg("req.files.max_kb")))
+        filesBar.add(filesMaxKb)
+        filesBar.add(filesRegenerate)
+        filesFormat.addActionListener { props.setValue(PROP_FILE_FORMAT, (filesFormat.selectedItem as ImageFormat?)?.name) }
+        for ((field, key) in listOf(filesWidth to PROP_FILE_WIDTH, filesHeight to PROP_FILE_HEIGHT, filesMaxKb to PROP_FILE_MAX_KB)) {
+            field.document.addDocumentListener(simpleListener { props.setValue(key, field.text.trim().ifEmpty { null }) })
+        }
+        filesRegenerate.addActionListener { regenerateFiles() }
+    }
+
+    /** What the user chose; a field that is empty or not a positive whole number means "decide for me". */
+    private fun fileChoice() = FileChoice(
+        format = filesFormat.selectedItem as ImageFormat?,
+        width = positive(filesWidth.text),
+        height = positive(filesHeight.text),
+        maxKb = positive(filesMaxKb.text),
+    )
+
+    private fun positive(text: String): Int? = text.trim().toIntOrNull()?.takeIf { it > 0 }
+
+    /** Replaces the generated files (and files still missing) with new random ones made with the current options. */
+    private fun regenerateFiles() {
+        val f = form ?: return
+        if (f.fileSpecs.isEmpty()) return
+        filesRegenerate.isEnabled = false
+        val choice = fileChoice()
+        val rows = f.parts.toList()
+        scope.launch {
+            val out = ArrayList<FormRow>()
+            val replaced = ArrayList<String>()
+            val made = ArrayList<String>()
+            val refused = ArrayList<String>()
+            for (row in rows) {
+                val spec = f.fileSpecs[row.name]
+                if (spec == null || !row.file || !(row.generated || row.value.isEmpty())) {
+                    out += row
+                    continue
+                }
+                when (val file = FileMaker.make(spec, choice, kotlin.random.Random.Default)) {
+                    is MadeFile.Ok -> {
+                        out += FormRow(row.name, fileStore.write(file).toString(), true, true, file.file.mime, file.name, true)
+                        made += describe(file)
+                        if (row.generated) replaced += row.value
+                    }
+                    is MadeFile.Refused -> {
+                        out += row
+                        refused += msg(file.bundleKey, *file.args.toTypedArray())
+                    }
+                }
+            }
+            withContext(Dispatchers.EDT) {
+                filesRegenerate.isEnabled = true
+                if (form !== f) {
+                    out.filter { it.generated && it.file && it !in rows }.forEach { deleteFile(it.value) }
+                    return@withContext
+                }
+                replaced.forEach { deleteFile(it) }
+                f.parts = out
+                refresh(baseUrl.text)
+                showFilesNote(made, refused)
+                onEdited()
+            }
+        }
+    }
+
+    private fun sweepOldFiles() {
+        if (!swept.compareAndSet(false, true)) return
+        com.intellij.openapi.application.ApplicationManager.getApplication().executeOnPooledThread { runCatching { fileStore.sweep() } }
     }
 
     /**
@@ -436,17 +645,29 @@ class RequestFormPanel(
         val mode = fillMode()
         if (mode == BodyFillMode.OFF || f.endpoint.method !in AUTOFILL_METHODS || !untouched(f) || f.endpoint.key in autoFilled) return
         scope.launch {
+            val random = mode == BodyFillMode.RANDOM
+            var parts: MadeParts? = null
             val template = try {
-                (BodyGenerator.generate(bodyTemplates(), f.endpoint, "", random = mode == BodyFillMode.RANDOM) as? BodyGeneration.Ready)?.template
+                val result = BodyGenerator.generate(bodyTemplates(), f.endpoint, "", random = random)
+                if (result is BodyGeneration.Unavailable) parts = multipartFor(f, random)
+                (result as? BodyGeneration.Ready)?.template
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 LOG.warn("Automatic body for ${f.endpoint.key} failed", e)
                 null
             }
+            val made = parts
             withContext(Dispatchers.EDT) {
-                if (form !== f || !untouched(f)) return@withContext
+                if (form !== f || !untouched(f)) {
+                    made?.let { discard(it) }
+                    return@withContext
+                }
                 rememberAutoFilled(f.endpoint.key)
+                if (made != null) {
+                    applyParts(f, made)
+                    return@withContext
+                }
                 if (template == null) return@withContext
                 applyTemplate(f, template)
                 generateNote.text = msg("req.body.autofilled")
@@ -488,6 +709,17 @@ class RequestFormPanel(
     internal fun bodyTextForTest(): String = bodyDocument.text
     internal fun generateButtonForTest(): JButton = generate
     internal fun randomButtonForTest(): JButton = randomBody
+    internal fun partsForTest(): List<FormRow> = form?.parts.orEmpty()
+    internal fun filesBarVisible(): Boolean = filesBar.isVisible
+    internal fun partsReplaceBarVisible(): Boolean = partsReplaceBar.isVisible
+    internal fun confirmReplacePartsForTest() { partsReplaceBar.components.filterIsInstance<ActionLink>().firstOrNull()?.doClick() }
+    internal fun setFileOptionsForTest(format: ImageFormat?, width: String, height: String, maxKb: String) {
+        filesFormat.selectedItem = format
+        filesWidth.text = width
+        filesHeight.text = height
+        filesMaxKb.text = maxKb
+    }
+    internal fun regenerateButtonForTest(): JButton = filesRegenerate
     internal fun methodComboVisible(): Boolean = methodCombo.isVisible
     internal fun baseUrlTextForTest(): String = baseUrl.text
     internal fun bodyEditorIsOnScreen(): Boolean = generalizedVisible(bodyEditor)
@@ -513,6 +745,14 @@ class RequestFormPanel(
 
     private companion object {
         const val PATH_LABEL_WIDTH = 110
+        const val FILE_FIELD_COLUMNS = 5
+        const val BYTES_PER_KB = 1024L
+        const val SAMPLE_SEED = 0
+        const val PROP_FILE_FORMAT = "routegenie.files.format"
+        const val PROP_FILE_WIDTH = "routegenie.files.width"
+        const val PROP_FILE_HEIGHT = "routegenie.files.height"
+        const val PROP_FILE_MAX_KB = "routegenie.files.maxKb"
+        val swept = java.util.concurrent.atomic.AtomicBoolean(false)
         val AUTOFILL_METHODS = setOf(HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH)
         val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(RequestFormPanel::class.java)
         /** JSON and text share one editor card; a card name maps to exactly one component. */
@@ -524,3 +764,6 @@ class RequestFormPanel(
 internal object JBColorsError {
     fun color(): Color = Palette.danger.text
 }
+
+/** Random upload files live below the IDE's own temporary folder, apart from everything else. */
+internal fun defaultFileStore() = GeneratedFileStore(java.nio.file.Path.of(PathManager.getTempPath(), "route-genie-files"))

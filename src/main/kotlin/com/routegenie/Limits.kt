@@ -529,4 +529,10 @@ object Limits {
     const val BUDGET_MULTIPART_RENDER_500_FIELDS_MS = 40L
     const val BUDGET_MULTIPART_EXTRACT_COLD_MS = 200L
     const val BUDGET_MULTIPART_EXTRACT_WARM_MS = 5L
+
+    /** Generated upload files: how long a stored file is kept, how many are kept, and the length of the made-up file names. */
+    const val GENERATED_FILES_KEEP_DAYS = 7
+    const val GENERATED_FILES_MAX = 200
+    const val FILE_NAME_MIN_CHARS = 5
+    const val FILE_NAME_MAX_CHARS = 9
 }

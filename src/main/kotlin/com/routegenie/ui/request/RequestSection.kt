@@ -95,6 +95,8 @@ class RequestSection(
     secretExecutor: (Runnable) -> Unit = { ApplicationManager.getApplication().executeOnPooledThread(it) },
     /** Owner of the response on screen, so replaced responses lose their spill file. */
     responses: ResponseSlot = project.getService(RouteGenieClientService::class.java).responses,
+    /** Where random upload files are written; the IDE's temporary folder in the window, a throw-away folder in tests. */
+    fileStore: com.routegenie.files.GeneratedFileStore = defaultFileStore(),
 ) : EndpointDetailsSection, Disposable {
     override val title: String = msg("req.title")
 
@@ -114,7 +116,7 @@ class RequestSection(
     private var disposed = false
 
     private val refreshAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
-    private val formPanel = RequestFormPanel(project, this, bodyTemplates, secrets, ::onEdited, env::updateBaseUrl)
+    private val formPanel = RequestFormPanel(project, this, bodyTemplates, secrets, ::onEdited, env::updateBaseUrl, fileStore = fileStore)
     private val envCombo = ComboBox<String>()
     private var envEditor: EnvironmentEditorPanel? = null
     private val requestCards = JPanel(CardLayout())

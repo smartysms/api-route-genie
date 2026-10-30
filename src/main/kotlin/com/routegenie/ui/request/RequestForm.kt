@@ -13,6 +13,7 @@ import com.routegenie.client.UrlResult
 import com.routegenie.client.UrlSupport
 import com.routegenie.model.Endpoint
 import com.routegenie.model.HttpMethod
+import com.routegenie.schema.model.FileSpec
 
 enum class BodyType(val contentType: String?) {
     NONE(null), JSON("application/json"), TEXT("text/plain"), FORM("application/x-www-form-urlencoded"), MULTIPART("multipart/form-data");
@@ -24,7 +25,17 @@ enum class BodyType(val contentType: String?) {
 }
 
 /** One editable row of a table (query, headers, form fields, multipart parts). [file] marks a multipart row whose value is a path. */
-data class FormRow(val name: String = "", val value: String = "", val enabled: Boolean = true, val file: Boolean = false)
+data class FormRow(
+    val name: String = "",
+    val value: String = "",
+    val enabled: Boolean = true,
+    val file: Boolean = false,
+    /** Sent as the part's Content-Type, and the file name sent to the server; null lets the engine decide from the path. */
+    val contentType: String? = null,
+    val fileName: String? = null,
+    /** True for a file this plugin made at random for this request (it may be replaced by Regenerate); never saved. */
+    val generated: Boolean = false,
+)
 
 enum class AuthKind { INHERIT, NONE, BEARER, BASIC, API_KEY }
 
@@ -41,6 +52,9 @@ class RequestForm(val endpoint: Endpoint) {
     var bodyText: String = ""
     var formFields: List<FormRow> = emptyList()
     var parts: List<FormRow> = emptyList()
+
+    /** What the code allows for each file part (by part name), set when the parts were filled from the code; not saved. */
+    var fileSpecs: Map<String, FileSpec> = emptyMap()
     var authKind: AuthKind = AuthKind.INHERIT
     var authName: String = ""
 
@@ -54,7 +68,7 @@ class RequestForm(val endpoint: Endpoint) {
             BodyType.FORM -> RequestBody.Form(formFields.filter { it.enabled && it.name.isNotEmpty() }.map { it.name to it.value })
             BodyType.MULTIPART -> RequestBody.Multipart(
                 parts.filter { it.enabled && it.name.isNotEmpty() }.map {
-                    if (it.file) MultipartPart(it.name, filePath = it.value) else MultipartPart(it.name, value = it.value)
+                    if (it.file) MultipartPart(it.name, filePath = it.value, fileName = it.fileName, contentType = it.contentType) else MultipartPart(it.name, value = it.value)
                 },
             )
         }
@@ -91,7 +105,7 @@ class RequestForm(val endpoint: Endpoint) {
             is RequestBody.Form -> { bodyKind = BodyType.FORM; formFields = b.fields.map { FormRow(it.first, it.second) } }
             is RequestBody.Multipart -> {
                 bodyKind = BodyType.MULTIPART
-                parts = b.parts.map { FormRow(it.name, it.filePath ?: it.value.orEmpty(), true, it.filePath != null) }
+                parts = b.parts.map { FormRow(it.name, it.filePath ?: it.value.orEmpty(), true, it.filePath != null, it.contentType, it.fileName) }
             }
         }
         when (val a = input.auth) {
@@ -112,6 +126,7 @@ class RequestForm(val endpoint: Endpoint) {
         c.bodyText = bodyText
         c.formFields = formFields
         c.parts = parts
+        c.fileSpecs = fileSpecs
         c.authKind = authKind
         c.authName = authName
     }
@@ -143,7 +158,7 @@ class RequestForm(val endpoint: Endpoint) {
             RequestBody.None -> { bodyKind = BodyType.NONE; bodyText = "" }
             is RequestBody.Text -> { bodyKind = BodyType.of(b.contentType); bodyText = b.text; if (bodyKind == BodyType.TEXT && !b.contentType.startsWith("text/plain")) headers = headers + FormRow("Content-Type", b.contentType) }
             is RequestBody.Form -> { bodyKind = BodyType.FORM; formFields = b.fields.map { FormRow(it.first, it.second) } }
-            is RequestBody.Multipart -> { bodyKind = BodyType.MULTIPART; parts = b.parts.map { FormRow(it.name, it.filePath ?: it.value.orEmpty(), true, it.filePath != null) } }
+            is RequestBody.Multipart -> { bodyKind = BodyType.MULTIPART; parts = b.parts.map { FormRow(it.name, it.filePath ?: it.value.orEmpty(), true, it.filePath != null, it.contentType, it.fileName) } }
         }
         return ImportResult(baseUrl, pathApplied)
     }

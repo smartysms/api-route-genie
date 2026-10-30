@@ -5,6 +5,8 @@ person who uses the plugin, newest section first, one `## ` heading per section.
 
 ## Latest
 
+- Random body: a button next to Generate body fills the body with random values that fit the types and limits the code declares (nested models, lists, enums, patterns, formats, dates, decimals), and gives another set every time you press it. Settings > Tools lets you choose how a body is filled when you first open an endpoint: sample values, random values, or not at all.
+- Uploads: endpoints that take files (FastAPI UploadFile and File, DRF and Django FileField and ImageField, Flask request.files) now get a multipart body. Random body makes real PNG, JPEG, GIF or BMP images, or valid pdf, csv, json, zip and text files, as the code allows. A bar above the parts lets you pick the format, the size in pixels and a maximum size in KB, and Regenerate makes new files.
 - Call endpoints from the window: pick the method, fill in path parameters, query, headers and body, press Send (or Ctrl+Enter) and read the answer in the same window.
 - Streaming answers (server-sent events, NDJSON, chunked) appear live; large answers are kept on disk and shown in pieces.
 - JSON viewer with Tree, Pretty, Raw and Table views, search, and a structural diff between two responses.
