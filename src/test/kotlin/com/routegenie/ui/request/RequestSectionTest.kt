@@ -54,14 +54,18 @@ class RequestSectionTest : BasePlatformTestCase() {
             val form = s.formForTest()
             form.selectFormTabForTest("Body")
             assertFalse("no body: the editor is hidden", form.bodyEditorIsOnScreen())
+            // A new endpoint starts at type None; "Generate body" must be reachable there, or the user never finds it.
+            assertTrue("no body: Generate body is still offered", form.generateIsOnScreen())
             for (kind in listOf(BodyType.JSON, BodyType.TEXT)) {
                 s.currentForm()!!.bodyKind = kind
                 form.refresh(null)
                 assertTrue("$kind shows the editor", form.bodyEditorIsOnScreen())
+                assertTrue("$kind offers Generate body", form.generateIsOnScreen())
             }
             s.currentForm()!!.bodyKind = BodyType.FORM
             form.refresh(null)
             assertFalse(form.bodyEditorIsOnScreen())
+            assertFalse("form types are not filled by Generate body", form.generateIsOnScreen())
         } finally { Disposer.dispose(owner) }
     }
 

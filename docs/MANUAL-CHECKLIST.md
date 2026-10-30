@@ -99,6 +99,8 @@ window; no editor tab, pop-up or separate window opens (the only dialog is the o
 41. Press Send on a slow endpoint and press Cancel/Stop: the request ends as "stopped" within a moment; no error balloon.
 42. "Generate body": for an endpoint with no declared body shows "The code does not declare a request body for this endpoint"
     and changes nothing. When a body can be derived (later phase), typing something first makes a Replace/Cancel bar appear.
+    The button is beside "Body type" and is visible while the type is None, JSON or Text (a new POST/PUT/PATCH endpoint starts at
+    None): on an endpoint with a Pydantic model parameter, pressing it at type None switches the type to JSON and fills the sample.
 
 ## Streaming
 43. Call an SSE endpoint (text/event-stream): the Body tab fills live, an Events tab appears with rows (time, event, id,

@@ -229,8 +229,6 @@ class RequestFormPanel(
     private fun buildContent(): JComponent {
         bodyCards.add(JBLabel(msg("req.body.none")).apply { foreground = Palette.textSecondary; border = JBUI.Borders.empty(DesignTokens.Space.S) }, BodyType.NONE.name)
         val editorCard = JPanel(BorderLayout()).apply {
-            val tools = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(DesignTokens.Space.S), 0)).apply { isOpaque = false; add(generate); add(generateNote) }
-            add(tools, BorderLayout.NORTH)
             add(bodyEditor, BorderLayout.CENTER)
             add(JPanel(BorderLayout()).apply { isOpaque = false; add(replaceBar, BorderLayout.NORTH); add(bodyValidationSlot, BorderLayout.SOUTH) }, BorderLayout.SOUTH)
         }
@@ -250,7 +248,15 @@ class RequestFormPanel(
             )
         }
         val bodyTab = JPanel(BorderLayout()).apply {
-            add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(DesignTokens.Space.S), JBUI.scale(DesignTokens.Space.XS))).apply { isOpaque = false; add(JBLabel(msg("req.body.type")).apply { foreground = Palette.textSecondary }); add(bodyCombo) }, BorderLayout.NORTH)
+            // "Generate body" sits beside the type chooser, not inside the editor card: a new endpoint starts with type None, whose
+            // card has no editor, and the button must be reachable there (it switches the type to JSON when it fills the body).
+            add(JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(DesignTokens.Space.S), JBUI.scale(DesignTokens.Space.XS))).apply {
+                isOpaque = false
+                add(JBLabel(msg("req.body.type")).apply { foreground = Palette.textSecondary })
+                add(bodyCombo)
+                add(generate)
+                add(generateNote)
+            }, BorderLayout.NORTH)
             add(bodyCards, BorderLayout.CENTER)
         }
         val top = JPanel(BorderLayout(JBUI.scale(DesignTokens.Space.S), 0)).apply {
@@ -322,6 +328,8 @@ class RequestFormPanel(
     }
 
     private fun showBodyCard(kind: BodyType) {
+        // The button fills a JSON/text body, so it is offered for those and for None (where it is the way in), not for form types.
+        generate.isVisible = kind == BodyType.NONE || kind == BodyType.JSON || kind == BodyType.TEXT
         if (kind == BodyType.JSON || kind == BodyType.TEXT) setBodyText(kind, form?.bodyText ?: bodyDocument.text)
         (bodyCards.layout as CardLayout).show(bodyCards, if (kind == BodyType.JSON || kind == BodyType.TEXT) CARD_EDITOR else kind.name)
     }
@@ -421,6 +429,7 @@ class RequestFormPanel(
     internal fun methodComboVisible(): Boolean = methodCombo.isVisible
     internal fun baseUrlTextForTest(): String = baseUrl.text
     internal fun bodyEditorIsOnScreen(): Boolean = generalizedVisible(bodyEditor)
+    internal fun generateIsOnScreen(): Boolean = generalizedVisible(generate)
     private fun generalizedVisible(c: java.awt.Component): Boolean {
         var p: java.awt.Component? = c
         while (p != null && p !== this) { if (!p.isVisible) return false; p = p.parent }
