@@ -7,15 +7,21 @@ import java.io.File
 
 /** The pure layers must stay free of the IDE and Swing, so their tests run in milliseconds without a platform. */
 class LayeringTest {
-    private val pureLayers = listOf("model", "client", "openapi", "ui/model", "schema/model", "json")
+    private val pureLayers = listOf("model", "client", "openapi", "ui/model", "schema/model", "json", "files")
     private val forbidden = listOf("com.intellij", "com.jetbrains", "java.awt", "javax.swing")
+
+    /** java.awt.image (BufferedImage and friends) is plain data and works headless; the generated-file package needs it. */
+    private val headlessAwt = "java.awt.image."
 
     @Test
     fun `pure layers import nothing from the IDE or Swing`() {
         val offenders = pureLayers.map { File(ProjectFiles.mainKotlin, "com/routegenie/$it") }.filter { it.isDirectory }
             .flatMap { ProjectFiles.kotlinSources(it) }
             .flatMap { file ->
-                file.readLines().filter { it.startsWith("import ") && forbidden.any { prefix -> it.removePrefix("import ").startsWith(prefix) } }
+                file.readLines().filter {
+                    it.startsWith("import ") && !it.removePrefix("import ").startsWith(headlessAwt) &&
+                        forbidden.any { prefix -> it.removePrefix("import ").startsWith(prefix) }
+                }
                     .map { "${ProjectFiles.relative(file)}: $it" }
             }
         assertTrue("Pure layers must not import the IDE:\n${offenders.joinToString("\n")}", offenders.isEmpty())

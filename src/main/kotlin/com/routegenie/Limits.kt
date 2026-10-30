@@ -475,4 +475,49 @@ object Limits {
 
     /** The random generator on a schema of 500 fields. */
     const val BUDGET_RANDOM_SAMPLE_500_FIELDS_MS = 40L
+
+    // --- Generated images and files (package files) -----------------------------------------------------------------
+
+    /** Random image of 256x256 as PNG, and one full-HD JPEG, both warm and in memory. */
+    const val BUDGET_IMAGE_PNG_256_MS = 15L
+    const val BUDGET_IMAGE_JPEG_FULL_HD_MS = 120L
+
+    /** Hard caps of a generated image: longest side, total pixels (the pixel buffer is 4 bytes each) and any generated file. */
+    const val IMAGE_MAX_DIMENSION = 8_192
+    const val IMAGE_MAX_PIXELS = 16_777_216L
+    const val FILE_MAX_BYTES = 20L * 1024 * 1024
+
+    /** Size used when the schema gives none. */
+    const val IMAGE_DEFAULT_WIDTH = 256
+    const val IMAGE_DEFAULT_HEIGHT = 256
+
+    /** JPEG qualities tried in order; the first gives the normal look, the others only make a small target size reachable. */
+    val IMAGE_JPEG_QUALITIES: List<Float> = listOf(0.8f, 0.5f, 0.25f, 0.05f)
+
+    /** Random shapes drawn on top of the gradient (inclusive range). */
+    const val IMAGE_SHAPES_MIN = 3
+    const val IMAGE_SHAPES_MAX = 7
+
+    /**
+     * Encoded size of the generated gradient-plus-shapes picture, as bytes = fixed + pixels * milliPerPixel / 1000 +
+     * sqrt(pixels) * perRoot. Measured over 12 seeds from 64x64 to 1920x1080 and set above the largest seen. They only drive
+     * the "about N KB" estimate and the shrinking in fit(); the real encoders decide the actual size.
+     */
+    const val IMAGE_PNG_MILLI_BYTES_PER_PIXEL = 90
+    const val IMAGE_PNG_BYTES_PER_ROOT_PIXEL = 65
+    const val IMAGE_JPEG_MILLI_BYTES_PER_PIXEL = 38
+    const val IMAGE_JPEG_BYTES_PER_ROOT_PIXEL = 22
+    const val IMAGE_GIF_MILLI_BYTES_PER_PIXEL = 140
+    const val IMAGE_GIF_BYTES_PER_ROOT_PIXEL = 32
+
+    /** Generated non-image files: default sizes when the caller gives none, in bytes (text) or items. */
+    const val FILE_DEFAULT_OCTET_BYTES = 256L
+    const val FILE_TEXT_WORDS_MIN = 8
+    const val FILE_TEXT_WORDS_MAX = 40
+    const val FILE_CSV_ROWS_MIN = 3
+    const val FILE_CSV_ROWS_MAX = 12
+    const val FILE_ZIP_ENTRY_WORDS = 20
+
+    /** Fixed local modification time written into generated zip entries so the same seed gives the same bytes anywhere. */
+    const val FILE_ZIP_ENTRY_DATE = "2020-01-01T00:00:00"
 }
