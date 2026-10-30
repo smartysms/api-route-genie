@@ -19,6 +19,20 @@ class FlaskRoutesTest : RouteProviderTestCase(FlaskRouteProvider()) {
         assertEquals(listOf(code), result.diagnostics.map { it.code })
     }
 
+    fun testRoutesDeclaredInsideAnIfAreKept() {
+        // Decision: a route behind a condition is still an endpoint of the project, so it is listed (the condition is not evaluated).
+        val result = discover("main.py" to appFile + """
+            import os
+            if os.getenv("DEBUG"):
+                @app.get("/debug")
+                def debug(): ...
+            else:
+                @app.get("/prod")
+                def prod(): ...
+        """)
+        assertEquals(listOf("GET /debug", "GET /prod"), routes(result))
+    }
+
     fun testRouteWithoutMethodsIsGetOnly() {
         // HEAD and OPTIONS are added by Flask itself and deliberately not listed.
         val result = discover("app.py" to appFile + """
