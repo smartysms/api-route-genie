@@ -20,7 +20,19 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build, test and package
         shell: bash
-        run: ./gradlew build --console=plain 2>&1 | tee gradle.log; test "${PIPESTATUS[0]}" -eq 0
+        # The init script makes Gradle print the message and stack of every failed test, not only its name.
+        run: |
+          cat > ci-init.gradle <<'GRADLE'
+          allprojects {
+            tasks.withType(Test).configureEach {
+              testLogging {
+                exceptionFormat 'full'
+                events 'failed'
+              }
+            }
+          }
+          GRADLE
+          ./gradlew build --console=plain -I ci-init.gradle 2>&1 | tee gradle.log; test "${PIPESTATUS[0]}" -eq 0
       - name: Say what failed
         # The run log needs a sign-in to read; a commit comment is readable by anyone who can see the commit.
         if: failure() && github.event_name == 'push'
